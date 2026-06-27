@@ -33,6 +33,14 @@ CORS_ALLOWED_ORIGINS = list({
     "http://127.0.0.1:5173",
 })
 
+WHATSAPP_WEBHOOK_URL = env(  # noqa: F405
+    "WHATSAPP_WEBHOOK_URL",
+    default="https://api.driveronhire.ai/api/v1/onboarding/webhooks/whatsapp/",
+)
+
+# Run Celery tasks inline until a dedicated worker service is deployed.
+CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=True)  # noqa: F405
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

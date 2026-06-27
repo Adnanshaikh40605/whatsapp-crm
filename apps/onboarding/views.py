@@ -203,5 +203,10 @@ class WhatsAppWebhookView(APIView):
             if not WhatsAppConnectService.verify_webhook_signature(request.body, signature):
                 return HttpResponse("Invalid signature", status=403)
 
-        process_inbound_webhook.delay(request.data)
+        from apps.inbox.services import WebhookProcessor
+
+        try:
+            process_inbound_webhook.delay(request.data)
+        except Exception:
+            WebhookProcessor(request.data).process()
         return APIResponse.success({"status": "received"})
