@@ -62,6 +62,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.TenantMiddleware",
+    "apps.core.middleware.StaffAccessMiddleware",
     "apps.core.middleware.AuditContextMiddleware",
 ]
 

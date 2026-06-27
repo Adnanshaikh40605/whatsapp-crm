@@ -52,6 +52,7 @@ class Organization(models.Model):
     white_label_domain = models.CharField(max_length=255, blank=True)
     custom_email = models.EmailField(blank=True)
     is_active = models.BooleanField(default=True)
+    access_password = models.CharField(max_length=128, blank=True)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -80,6 +81,20 @@ class Organization(models.Model):
         if getattr(settings, "INTERNAL_MODE", True):
             return settings.UNLIMITED_PLAN_LIMITS
         return settings.DEFAULT_PLAN_LIMITS.get(self.plan, settings.DEFAULT_PLAN_LIMITS["free"])
+
+    def set_access_password(self, raw_password):
+        from django.contrib.auth.hashers import make_password
+        self.access_password = make_password(raw_password)
+
+    def check_access_password(self, raw_password):
+        from django.contrib.auth.hashers import check_password
+        if not self.access_password:
+            return True
+        return check_password(raw_password, self.access_password)
+
+    @property
+    def has_access_password(self):
+        return bool(self.access_password)
 
 
 class OrganizationMembership(models.Model):

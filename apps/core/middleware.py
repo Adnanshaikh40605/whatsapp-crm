@@ -1,7 +1,9 @@
 from django.conf import settings
+from django.http import JsonResponse
 from django.utils.deprecation import MiddlewareMixin
 
-from apps.core.models import set_audit_context, set_current_organization
+from apps.core.models import get_current_organization, set_audit_context, set_current_organization
+from apps.core.rbac import get_membership, is_staff_role, staff_may_access_path
 from apps.organizations.models import Organization, OrganizationMembership
 
 
@@ -29,13 +31,18 @@ class TenantMiddleware(MiddlewareMixin):
         if request.user.is_authenticated:
             org_id = request.headers.get(settings.TENANT_HEADER)
             if org_id:
-                membership = OrganizationMembership.objects.filter(
-                    organization_id=org_id,
-                    user=request.user,
-                    is_active=True,
-                ).select_related("organization").first()
-                if membership:
-                    organization = membership.organization
+                if request.user.is_superuser:
+                    organization = Organization.objects.filter(
+                        id=org_id, is_active=True
+                    ).first()
+                else:
+                    membership = OrganizationMembership.objects.filter(
+                        organization_id=org_id,
+                        user=request.user,
+                        is_active=True,
+                    ).select_related("organization").first()
+                    if membership:
+                        organization = membership.organization
             else:
                 membership = (
                     OrganizationMembership.objects.filter(
@@ -64,3 +71,24 @@ class AuditContextMiddleware(MiddlewareMixin):
             ip_address=ip or None,
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
+
+
+class StaffAccessMiddleware(MiddlewareMixin):
+    """Restrict staff (agent/viewer) to inbox and auth endpoints."""
+
+    def process_request(self, request):
+        if not request.user.is_authenticated or request.user.is_superuser:
+            return None
+        if not request.path.startswith("/api/v1/"):
+            return None
+        if staff_may_access_path(request.path):
+            return None
+
+        org = get_current_organization()
+        membership = get_membership(request.user, org)
+        if membership and is_staff_role(membership.role):
+            return JsonResponse(
+                {"success": False, "message": "Staff members can only access the inbox."},
+                status=403,
+            )
+        return None

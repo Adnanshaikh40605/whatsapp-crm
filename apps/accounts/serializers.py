@@ -1,11 +1,16 @@
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
+from apps.core.models import get_current_organization
+from apps.core.rbac import get_membership, resolve_platform_role
+
 User = get_user_model()
 
 
 class UserSerializer(serializers.ModelSerializer):
     full_name = serializers.ReadOnlyField()
+    org_role = serializers.SerializerMethodField()
+    platform_role = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -21,9 +26,23 @@ class UserSerializer(serializers.ModelSerializer):
             "email_verified",
             "is_staff",
             "is_superuser",
+            "org_role",
+            "platform_role",
             "created_at",
         )
-        read_only_fields = ("id", "email_verified", "created_at")
+        read_only_fields = ("id", "email_verified", "created_at", "org_role", "platform_role", "is_superuser")
+
+    def get_org_role(self, obj):
+        request = self.context.get("request")
+        if not request:
+            return None
+        org = get_current_organization()
+        membership = get_membership(obj, org)
+        return membership.role if membership else None
+
+    def get_platform_role(self, obj):
+        org_role = self.get_org_role(obj)
+        return resolve_platform_role(obj, org_role)
 
 
 class RegisterSerializer(serializers.ModelSerializer):
