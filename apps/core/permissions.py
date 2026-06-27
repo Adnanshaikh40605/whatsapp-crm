@@ -18,6 +18,8 @@ class IsOrganizationMember(BasePermission):
         if org is None:
             return False
         request.organization = org
+        if request.user.is_superuser:
+            return True
         return OrganizationMembership.objects.filter(
             organization=org,
             user=request.user,

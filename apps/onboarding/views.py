@@ -3,7 +3,7 @@ from rest_framework.views import APIView
 
 from apps.core.exceptions import APIResponse
 from apps.core.models import get_current_organization
-from apps.core.permissions import IsOrganizationMember, IsOwnerOrAdmin
+from apps.core.permissions import IsOrgAdmin, IsOrganizationMember, IsOwnerOrAdmin
 from apps.onboarding.data.industry_packs import INDUSTRY_PACKS
 from apps.onboarding.serializers import (
     AICampaignSerializer,
@@ -45,10 +45,12 @@ class WhatsAppEmbeddedSignupConfigView(APIView):
 
 
 class WhatsAppConnectView(APIView):
-    permission_classes = [IsAuthenticated, IsOrganizationMember]
+    permission_classes = [IsAuthenticated, IsOrgAdmin]
 
     def post(self, request):
         org = get_current_organization()
+        if org is None:
+            return APIResponse.error("No organization selected", status_code=400)
         serializer = WhatsAppConnectSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
