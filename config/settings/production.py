@@ -23,6 +23,17 @@ SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 
+# Production CORS — allow frontend on driveronhire.ai
+CORS_ALLOWED_ORIGINS = env.list(  # noqa: F405
+    "CORS_ALLOWED_ORIGINS",
+    default=[
+        "https://www.driveronhire.ai",
+        "https://driveronhire.ai",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+)
+
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
