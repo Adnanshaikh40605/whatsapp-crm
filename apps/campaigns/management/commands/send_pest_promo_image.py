@@ -1,6 +1,8 @@
 """Send pest promo image to a phone (requires open 24h window — user must reply HI first)."""
 
 from pathlib import Path
+
+from django.core.management.base import BaseCommand, CommandError
 from django.core.files.base import ContentFile
 
 from apps.campaigns.models import MediaAsset, WhatsAppTemplate
@@ -8,7 +10,7 @@ from apps.campaigns.meta import MetaTemplateService, build_template_send_compone
 from apps.core.whatsapp_service import WhatsAppService
 from apps.organizations.models import Organization
 
-DEFAULT_IMAGE = Path(__file__).resolve().parents[5] / "ChatGPT Image Jun 24, 2026, 02_05_05 AM.png"
+from apps.campaigns.promo import get_promo_image_path
 
 
 class Command(BaseCommand):
@@ -29,8 +31,8 @@ class Command(BaseCommand):
         if len(phone) == 10:
             phone = f"91{phone}"
 
-        image_path = options["image"] or str(DEFAULT_IMAGE)
-        if not Path(image_path).is_file():
+        image_path = options["image"] or get_promo_image_path()
+        if not image_path or not Path(image_path).is_file():
             raise CommandError(f"Image not found: {image_path}")
 
         wa = WhatsAppService(org)

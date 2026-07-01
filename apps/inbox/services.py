@@ -107,24 +107,13 @@ class WebhookProcessor:
         if keyword not in {"hi", "hello", "image", "img", "yes", "photo"}:
             return
 
-        from pathlib import Path
-
-        from apps.campaigns.models import MediaAsset
+        from apps.campaigns.promo import get_promo_image_path
         from apps.core.whatsapp_service import WhatsAppService
 
-        candidates = list(MediaAsset.objects.filter(organization=org, asset_type="image").order_by("-updated_at")[:3])
-        image_path = ""
-        for asset in candidates:
-            if asset.file and asset.file.path and Path(asset.file.path).is_file():
-                image_path = asset.file.path
-                break
-
+        image_path = get_promo_image_path()
         if not image_path:
-            project_image = Path(__file__).resolve().parents[4].parent / "ChatGPT Image Jun 24, 2026, 02_05_05 AM.png"
-            if project_image.is_file():
-                image_path = str(project_image)
-            else:
-                return
+            logger.warning("Promo image file not found on server")
+            return
 
         wa = WhatsAppService(org)
         upload = wa.upload_media_file(image_path, "image/png")
@@ -135,9 +124,10 @@ class WebhookProcessor:
         import requests
 
         caption = (
-            "Hello! Here is your pest control service update.\n\n"
-            "Professional mosquito, termite & rodent treatment.\n\n"
-            "Reply to book your inspection.\n\n"
+            "Hello! Your pest control offer is ready.\n\n"
+            "✅ Mosquito & termite treatment\n"
+            "✅ Same-day booking\n"
+            "✅ Professional service\n\n"
             "— Pest Control 99"
         )
         url = f"https://graph.facebook.com/v21.0/{org.whatsapp_phone_number_id}/messages"
@@ -172,6 +162,25 @@ class WebhookProcessor:
         conversation.last_message_at = timezone.now()
         conversation.save(update_fields=["last_message_preview", "last_message_at", "updated_at"])
         logger.info("Sent promo image reply to %s wamid=%s", phone, wa_id)
+
+        # Follow up with Wint-style utility template if approved
+        self._try_send_image_template(org, phone, wa, ["Adnan"])
+
+    def _try_send_image_template(self, org, phone, wa, body_params):
+        from apps.campaigns.meta import build_template_send_components
+        from apps.campaigns.models import WhatsAppTemplate
+
+        tpl = WhatsAppTemplate.objects.filter(
+            organization=org,
+            name="pest_home_offer",
+            status=WhatsAppTemplate.Status.APPROVED,
+        ).first()
+        if not tpl:
+            return
+        components = build_template_send_components(tpl, body_params, wa=wa)
+        result = wa.send_template(phone, tpl.name, tpl.language, components)
+        if result.get("error"):
+            logger.warning("pest_home_offer template send failed: %s", result["error"])
 
     def _extract_content(self, msg):
         msg_type = msg.get("type", "text")
