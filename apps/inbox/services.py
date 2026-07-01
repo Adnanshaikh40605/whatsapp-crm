@@ -1,8 +1,12 @@
+import logging
+
 from django.utils import timezone
 
 from apps.core.models import set_current_organization
 from apps.crm.models import Contact
 from apps.inbox.models import Conversation, Message
+
+logger = logging.getLogger(__name__)
 
 
 class WebhookProcessor:
@@ -13,18 +17,35 @@ class WebhookProcessor:
 
     def process(self):
         entries = self.payload.get("entry", [])
+        logger.info("WhatsApp webhook payload summary: entries=%s", len(entries))
         processed = 0
         for entry in entries:
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 metadata = value.get("metadata", {})
                 phone_number_id = metadata.get("phone_number_id")
+                inbound_messages = value.get("messages", [])
+                statuses = value.get("statuses", [])
 
-                for msg in value.get("messages", []):
+                if inbound_messages or statuses:
+                    logger.info(
+                        "WhatsApp webhook change: phone_number_id=%s inbound_messages=%s status_events=%s",
+                        phone_number_id,
+                        len(inbound_messages),
+                        [s.get("status") for s in statuses],
+                    )
+
+                for msg in inbound_messages:
                     self._process_inbound(msg, phone_number_id, value)
                     processed += 1
 
-                for status in value.get("statuses", []):
+                for status in statuses:
+                    logger.info(
+                        "WhatsApp status webhook: status=%s message_id=%s phone_number_id=%s",
+                        status.get("status"),
+                        status.get("id"),
+                        phone_number_id,
+                    )
                     self._process_status(status, phone_number_id)
                     processed += 1
         return {"processed": processed}
@@ -152,6 +173,10 @@ class WebhookProcessor:
     def _process_status(self, status, phone_number_id):
         org = self._get_org(phone_number_id)
         if not org:
+            logger.warning(
+                "WhatsApp status webhook: no org for phone_number_id=%s",
+                phone_number_id,
+            )
             return
 
         set_current_organization(org)
@@ -160,6 +185,11 @@ class WebhookProcessor:
 
         message = Message.objects.filter(organization=org, whatsapp_message_id=wa_id).first()
         if not message:
+            logger.warning(
+                "WhatsApp status webhook: no message found for wamid=%s org=%s",
+                wa_id,
+                org.name,
+            )
             return
 
         now = timezone.now()
@@ -182,6 +212,12 @@ class WebhookProcessor:
         if msg_status == "failed" and status.get("errors"):
             message.metadata["errors"] = status.get("errors")
         message.save(update_fields=["status", "metadata", "updated_at"])
+        logger.info(
+            "WhatsApp status applied: status=%s message_id=%s db_message_id=%s",
+            msg_status,
+            wa_id,
+            message.id,
+        )
 
         from apps.campaigns.models import CampaignRecipient
         recipient = CampaignRecipient.objects.filter(whatsapp_message_id=wa_id).first()

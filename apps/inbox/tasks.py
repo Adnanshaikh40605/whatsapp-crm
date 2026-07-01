@@ -80,6 +80,11 @@ def send_sms_message(self, message_id):
 
 @shared_task
 def process_inbound_webhook(payload):
+    import logging
+
     from apps.inbox.services import WebhookProcessor
-    processor = WebhookProcessor(payload)
-    return processor.process()
+
+    webhook_logger = logging.getLogger("apps.inbox.webhook")
+    result = WebhookProcessor(payload).process()
+    webhook_logger.info("WhatsApp webhook task finished: %s", result)
+    return result

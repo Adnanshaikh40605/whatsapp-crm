@@ -191,9 +191,16 @@ class WhatsAppWebhookView(APIView):
         return HttpResponse("Forbidden", status=403)
 
     def post(self, request):
+        import logging
+
         from django.conf import settings as django_settings
         from django.http import HttpResponse
         from apps.inbox.tasks import process_inbound_webhook
+
+        webhook_logger = logging.getLogger("apps.inbox.webhook")
+        raw_body = request.body.decode("utf-8", errors="replace")
+        webhook_logger.info("WhatsApp webhook received")
+        webhook_logger.info("Raw WhatsApp webhook payload: %s", raw_body[:8000])
 
         app_secret = getattr(django_settings, "META_APP_SECRET", "")
         signature = request.headers.get("X-Hub-Signature-256", "")
@@ -201,12 +208,20 @@ class WhatsAppWebhookView(APIView):
             from apps.onboarding.whatsapp import WhatsAppConnectService
 
             if not WhatsAppConnectService.verify_webhook_signature(request.body, signature):
+                webhook_logger.warning(
+                    "WhatsApp webhook rejected: invalid signature (header=%s)",
+                    signature[:32] + "..." if signature else "missing",
+                )
                 return HttpResponse("Invalid signature", status=403)
+            webhook_logger.info("WhatsApp webhook signature verified")
 
         from apps.inbox.services import WebhookProcessor
 
         try:
-            process_inbound_webhook.delay(request.data)
-        except Exception:
-            WebhookProcessor(request.data).process()
+            task_result = process_inbound_webhook.delay(request.data)
+            webhook_logger.info("WhatsApp webhook processed: %s", task_result.result)
+        except Exception as exc:
+            webhook_logger.warning("Webhook task failed, processing inline: %s", exc)
+            result = WebhookProcessor(request.data).process()
+            webhook_logger.info("WhatsApp webhook processed inline: %s", result)
         return APIResponse.success({"status": "received"})
