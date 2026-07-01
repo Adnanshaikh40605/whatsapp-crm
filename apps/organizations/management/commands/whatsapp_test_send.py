@@ -76,9 +76,14 @@ class Command(BaseCommand):
             content = options["text"]
             template_name = ""
         else:
-            template_name, language = self.resolve_template(org, options["template"].strip())
+            template_name, language, template_obj = self.resolve_template(org, options["template"].strip())
             self.stdout.write(f"Sending template: {template_name} ({language})")
-            result = wa.send_template(phone, template_name, language)
+            from apps.campaigns.meta import build_template_send_components
+
+            components = []
+            if template_obj:
+                components = build_template_send_components(template_obj, wa=wa)
+            result = wa.send_template(phone, template_name, language, components or None)
             message_type = Message.MessageType.TEMPLATE
             content = f"Template: {template_name}"
 
@@ -120,17 +125,28 @@ class Command(BaseCommand):
         self.stdout.write(f"  whatsapp_message_id: {wa_message_id or 'n/a'}")
         self.stdout.write(json.dumps(result, indent=2))
 
-    def resolve_template(self, org, preferred: str) -> tuple[str, str]:
+    def resolve_template(self, org, preferred: str) -> tuple[str, str, WhatsAppTemplate | None]:
         if preferred:
             tpl = WhatsAppTemplate.objects.filter(
-                organization=org, name=preferred, status=WhatsAppTemplate.Status.APPROVED
+                organization=org, name=preferred,
             ).first()
+            if tpl and tpl.status == WhatsAppTemplate.Status.APPROVED:
+                return tpl.name, tpl.language or "en_US", tpl
             if tpl:
-                return tpl.name, tpl.language or "en_US"
+                self.stdout.write(self.style.WARNING(
+                    f'Template "{preferred}" status is {tpl.status}; trying Meta sync...'
+                ))
 
         sync = MetaTemplateService(org).sync_templates()
         if sync.get("error"):
             self.stdout.write(self.style.WARNING(f"Template sync warning: {sync['error']}"))
+
+        if preferred:
+            tpl = WhatsAppTemplate.objects.filter(
+                organization=org, name=preferred, status=WhatsAppTemplate.Status.APPROVED,
+            ).first()
+            if tpl:
+                return tpl.name, tpl.language or "en_US", tpl
 
         approved = WhatsAppTemplate.objects.filter(
             organization=org,
@@ -139,15 +155,15 @@ class Command(BaseCommand):
 
         utility = approved.filter(category=WhatsAppTemplate.Category.UTILITY).first()
         if utility:
-            return utility.name, utility.language or "en_US"
+            return utility.name, utility.language or "en_US", utility
 
         any_tpl = approved.first()
         if any_tpl:
-            return any_tpl.name, any_tpl.language or "en_US"
+            return any_tpl.name, any_tpl.language or "en_US", any_tpl
 
         if preferred:
-            return preferred, "en_US"
-        return "hello_world", "en_US"
+            return preferred, "en_US", None
+        return "hello_world", "en_US", None
 
     @staticmethod
     def normalize_phone(phone: str, country_code: str) -> str:

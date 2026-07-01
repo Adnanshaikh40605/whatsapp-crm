@@ -1,6 +1,7 @@
 """Central Meta WhatsApp Cloud API client."""
 
 import logging
+import os
 
 import requests
 from django.conf import settings
@@ -55,6 +56,7 @@ class WhatsAppService:
             template["components"] = components
         return self._post({
             "messaging_product": "whatsapp",
+            "recipient_type": "individual",
             "to": to,
             "type": "template",
             "template": template,
@@ -99,6 +101,31 @@ class WhatsAppService:
             "type": media_type,
             media_type: media,
         })
+
+    def upload_media_file(self, file_path: str, mime_type: str = "image/jpeg") -> dict:
+        """Upload a local file to Meta; returns {'id': '...'} on success."""
+        if not self.is_configured:
+            return {"error": "WhatsApp not configured"}
+
+        url = f"{self.GRAPH_API}/{self.phone_number_id}/media"
+        try:
+            filename = os.path.basename(file_path)
+            with open(file_path, "rb") as handle:
+                response = requests.post(
+                    url,
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                    data={"messaging_product": "whatsapp", "type": mime_type},
+                    files={"file": (filename, handle, mime_type)},
+                    timeout=120,
+                )
+            data = response.json()
+            if not response.ok:
+                logger.error("WhatsApp media upload error: %s", data)
+                return {"error": data}
+            return data
+        except (OSError, requests.RequestException) as exc:
+            logger.exception("WhatsApp media upload failed")
+            return {"error": str(exc)}
 
     def send_carousel_template(self, to: str, template_name: str, cards: list[dict], language: str = "en") -> dict:
         """Send carousel via approved template components."""

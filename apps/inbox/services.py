@@ -92,7 +92,6 @@ class WebhookProcessor:
 
         self._track_ad_attribution(org, contact, value)
 
-        from apps.automation.engine import BotFlowEngine, WorkflowEngine
         from apps.automation.tasks import dispatch_workflow
 
         if created:
@@ -100,9 +99,79 @@ class WebhookProcessor:
                 "phone": phone, "conversation_id": str(conversation.id),
             })
 
-        engine = BotFlowEngine(org, conversation, contact)
-        replies = engine.handle_message(content, button_id)
-        self._send_replies(org, phone, conversation, replies)
+        self._maybe_send_promo_image_reply(org, phone, conversation, content)
+
+    def _maybe_send_promo_image_reply(self, org, phone, conversation, content):
+        """Send pest promo image when customer replies HI (opens 24h window for media)."""
+        keyword = content.strip().lower()
+        if keyword not in {"hi", "hello", "image", "img", "yes", "photo"}:
+            return
+
+        from pathlib import Path
+
+        from apps.campaigns.models import MediaAsset
+        from apps.core.whatsapp_service import WhatsAppService
+
+        candidates = list(MediaAsset.objects.filter(organization=org, asset_type="image").order_by("-updated_at")[:3])
+        image_path = ""
+        for asset in candidates:
+            if asset.file and asset.file.path and Path(asset.file.path).is_file():
+                image_path = asset.file.path
+                break
+
+        if not image_path:
+            project_image = Path(__file__).resolve().parents[4].parent / "ChatGPT Image Jun 24, 2026, 02_05_05 AM.png"
+            if project_image.is_file():
+                image_path = str(project_image)
+            else:
+                return
+
+        wa = WhatsAppService(org)
+        upload = wa.upload_media_file(image_path, "image/png")
+        if upload.get("error"):
+            logger.warning("Promo image upload failed: %s", upload["error"])
+            return
+
+        import requests
+
+        caption = (
+            "Hello! Here is your pest control service update.\n\n"
+            "Professional mosquito, termite & rodent treatment.\n\n"
+            "Reply to book your inspection.\n\n"
+            "— Pest Control 99"
+        )
+        url = f"https://graph.facebook.com/v21.0/{org.whatsapp_phone_number_id}/messages"
+        response = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {org.whatsapp_access_token}"},
+            json={
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "image",
+                "image": {"id": upload["id"], "caption": caption[:1024]},
+            },
+            timeout=30,
+        )
+        data = response.json()
+        if data.get("error"):
+            logger.warning("Promo image send failed: %s", data["error"])
+            return
+
+        wa_id = (data.get("messages") or [{}])[0].get("id", "")
+        Message.objects.create(
+            organization=org,
+            conversation=conversation,
+            direction=Message.Direction.OUTBOUND,
+            message_type=Message.MessageType.IMAGE,
+            content=caption,
+            whatsapp_message_id=wa_id,
+            status=Message.Status.SENT if wa_id else Message.Status.PENDING,
+            metadata={"promo_auto_reply": True, "meta_response": data},
+        )
+        conversation.last_message_preview = "Pest control promo image"
+        conversation.last_message_at = timezone.now()
+        conversation.save(update_fields=["last_message_preview", "last_message_at", "updated_at"])
+        logger.info("Sent promo image reply to %s wamid=%s", phone, wa_id)
 
     def _extract_content(self, msg):
         msg_type = msg.get("type", "text")
