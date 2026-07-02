@@ -7,6 +7,34 @@ from apps.crm.models import Contact
 from apps.inbox.models import Conversation, Message
 
 logger = logging.getLogger(__name__)
+webhook_logger = logging.getLogger("apps.inbox.webhook")
+
+
+def _normalize_inbound_phone(value: str) -> str:
+    digits = "".join(ch for ch in str(value) if ch.isdigit())
+    if len(digits) == 10:
+        return f"91{digits}"
+    if digits.startswith("00"):
+        return digits[2:]
+    return digits
+
+
+def _broadcast_inbox_message(org, message: Message) -> None:
+    from apps.inbox.realtime import broadcast_inbox_event
+    from apps.inbox.serializers import ConversationSerializer, MessageSerializer
+
+    message_data = MessageSerializer(message).data
+    conversation_data = ConversationSerializer(message.conversation).data
+    org_id = str(org.id)
+
+        broadcast_inbox_event(org_id, {"type": "new_message", "message": message_data})
+        broadcast_inbox_event(org_id, {"type": "message_created", "message": message_data})
+    broadcast_inbox_event(org_id, {"type": "conversation_updated", "conversation": conversation_data})
+    webhook_logger.info(
+        "WebSocket broadcast: message_created conversation_id=%s message_id=%s",
+        message.conversation_id,
+        message.id,
+    )
 
 
 class WebhookProcessor:
@@ -57,40 +85,111 @@ class WebhookProcessor:
         ).first()
 
     def _process_inbound(self, msg, phone_number_id, value):
+        msg_type_raw = msg.get("type", "text")
+        wa_id = msg.get("id", "")
+        phone_raw = msg.get("from", "")
+
+        webhook_logger.info(
+            "Incoming message webhook: phone_number_id=%s from=%s type=%s text=%s message_id=%s",
+            phone_number_id,
+            phone_raw,
+            msg_type_raw,
+            msg.get("text", {}).get("body", "") if msg_type_raw == "text" else "",
+            wa_id,
+        )
+
         org = self._get_org(phone_number_id)
         if not org:
+            webhook_logger.warning(
+                "Incoming webhook: no org for phone_number_id=%s from=%s wamid=%s",
+                phone_number_id,
+                phone_raw,
+                wa_id,
+            )
             return
 
         set_current_organization(org)
-        phone = msg.get("from", "")
+        phone = _normalize_inbound_phone(phone_raw)
+        if not phone:
+            webhook_logger.warning("Incoming webhook: empty customer phone wamid=%s", wa_id)
+            return
+
+        if wa_id:
+            existing = Message.objects.filter(
+                organization=org,
+                whatsapp_message_id=wa_id,
+            ).first()
+            if existing:
+                webhook_logger.info(
+                    "Incoming webhook duplicate skipped: wamid=%s conversation_id=%s",
+                    wa_id,
+                    existing.conversation_id,
+                )
+                return
+
         contact, _ = Contact.objects.get_or_create(
-            organization=org, phone=phone,
-            defaults={"source": Contact.Source.WHATSAPP, "whatsapp_id": phone},
+            organization=org,
+            phone=phone,
+            defaults={"source": Contact.Source.WHATSAPP, "whatsapp_id": phone_raw or phone},
         )
+        if phone_raw and contact.whatsapp_id != phone_raw:
+            contact.whatsapp_id = phone_raw
+            contact.save(update_fields=["whatsapp_id", "updated_at"])
 
         conversation, created = Conversation.objects.get_or_create(
-            organization=org, contact=contact,
+            organization=org,
+            contact=contact,
             defaults={"status": Conversation.Status.OPEN},
         )
 
         content, msg_type, button_id = self._extract_content(msg)
-        Message.objects.create(
+        message = Message.objects.create(
             organization=org,
             conversation=conversation,
             direction=Message.Direction.INBOUND,
             message_type=msg_type,
             content=content,
-            whatsapp_message_id=msg.get("id", ""),
+            whatsapp_message_id=wa_id,
             status=Message.Status.DELIVERED,
-            metadata={"raw": msg},
+            metadata={"raw": msg, "button_id": button_id},
         )
 
         conversation.last_message_at = timezone.now()
         conversation.last_message_preview = content[:255]
         conversation.unread_count += 1
-        conversation.save(update_fields=["last_message_at", "last_message_preview", "unread_count", "updated_at"])
+        conversation.metadata = {
+            **(conversation.metadata or {}),
+            "last_message_direction": Message.Direction.INBOUND,
+        }
+        conversation.save(update_fields=[
+            "last_message_at",
+            "last_message_preview",
+            "unread_count",
+            "metadata",
+            "updated_at",
+        ])
+
+        webhook_logger.info(
+            "Incoming message saved: org=%s conversation_id=%s message_id=%s type=%s",
+            org.name,
+            conversation.id,
+            message.id,
+            msg_type,
+        )
+
+        try:
+            _broadcast_inbox_message(org, message)
+        except Exception as exc:
+            webhook_logger.warning("WebSocket broadcast failed for inbound message: %s", exc)
 
         self._track_ad_attribution(org, contact, value)
+
+        if button_id:
+            from apps.campaigns.campaign_analytics import track_campaign_click
+            try:
+                track_campaign_click(org, contact, button_id, content, msg)
+            except Exception as exc:
+                webhook_logger.warning("Campaign click tracking failed: %s", exc)
 
         from apps.automation.tasks import dispatch_workflow
 
@@ -148,7 +247,7 @@ class WebhookProcessor:
             return
 
         wa_id = (data.get("messages") or [{}])[0].get("id", "")
-        Message.objects.create(
+        outbound = Message.objects.create(
             organization=org,
             conversation=conversation,
             direction=Message.Direction.OUTBOUND,
@@ -160,8 +259,16 @@ class WebhookProcessor:
         )
         conversation.last_message_preview = "Pest control promo image"
         conversation.last_message_at = timezone.now()
-        conversation.save(update_fields=["last_message_preview", "last_message_at", "updated_at"])
+        conversation.metadata = {
+            **(conversation.metadata or {}),
+            "last_message_direction": Message.Direction.OUTBOUND,
+        }
+        conversation.save(update_fields=["last_message_preview", "last_message_at", "metadata", "updated_at"])
         logger.info("Sent promo image reply to %s wamid=%s", phone, wa_id)
+        try:
+            _broadcast_inbox_message(org, outbound)
+        except Exception as exc:
+            webhook_logger.warning("WebSocket broadcast failed for promo reply: %s", exc)
 
         # Follow up with Wint-style utility template if approved
         self._try_send_image_template(org, phone, wa, ["Adnan"])
@@ -202,6 +309,20 @@ class WebhookProcessor:
             return msg.get("video", {}).get("caption", "[Video]"), Message.MessageType.VIDEO, button_id
         if msg_type == "document":
             return msg.get("document", {}).get("filename", "[Document]"), Message.MessageType.DOCUMENT, button_id
+        if msg_type == "audio":
+            return "[Voice note]", Message.MessageType.AUDIO, button_id
+        if msg_type == "sticker":
+            return "[Sticker]", Message.MessageType.IMAGE, button_id
+        if msg_type == "location":
+            loc = msg.get("location", {})
+            label = loc.get("name") or loc.get("address") or f"{loc.get('latitude')}, {loc.get('longitude')}"
+            return f"[Location] {label}".strip(), Message.MessageType.TEXT, button_id
+        if msg_type == "contacts":
+            names = [
+                f"{c.get('name', {}).get('formatted_name', '')}".strip()
+                for c in msg.get("contacts", [])
+            ]
+            return f"[Contact] {', '.join(n for n in names if n) or 'shared'}", Message.MessageType.TEXT, button_id
         return f"[{msg_type}]", Message.MessageType.TEXT, button_id
 
     def _send_replies(self, org, phone, conversation, replies):
@@ -270,26 +391,25 @@ class WebhookProcessor:
             )
             return
 
-        now = timezone.now()
+        from apps.inbox.message_status import apply_message_status_update
+
         status_map = {
             "sent": Message.Status.SENT,
             "delivered": Message.Status.DELIVERED,
             "read": Message.Status.READ,
             "failed": Message.Status.FAILED,
         }
-        message.status = status_map.get(msg_status, message.status)
-        message.metadata = {
-            **(message.metadata or {}),
-            "last_status_webhook_at": now.isoformat(),
-            "last_status_payload": status,
-            "status_timestamps": {
-                **(message.metadata or {}).get("status_timestamps", {}),
-                msg_status: status.get("timestamp") or now.isoformat(),
-            },
-        }
-        if msg_status == "failed" and status.get("errors"):
-            message.metadata["errors"] = status.get("errors")
-        message.save(update_fields=["status", "metadata", "updated_at"])
+        new_status = status_map.get(msg_status)
+        if not new_status:
+            return
+
+        apply_message_status_update(
+            message,
+            new_status,
+            event_time=status.get("timestamp"),
+            raw_payload=status,
+            broadcast=True,
+        )
         logger.info(
             "WhatsApp status applied: status=%s message_id=%s db_message_id=%s",
             msg_status,
@@ -298,6 +418,7 @@ class WebhookProcessor:
         )
 
         from apps.campaigns.models import CampaignRecipient
+        now = timezone.now()
         recipient = CampaignRecipient.objects.filter(whatsapp_message_id=wa_id).first()
         if recipient:
             if msg_status == "delivered":
@@ -310,6 +431,8 @@ class WebhookProcessor:
                 recipient.status = CampaignRecipient.Status.FAILED
                 if status.get("errors"):
                     recipient.error_message = str(status.get("errors"))
+                    from apps.campaigns.campaign_analytics import _parse_failure_code
+                    recipient.failure_code = _parse_failure_code(recipient.error_message)
             recipient.save()
             campaign = recipient.campaign
             campaign.sent_count = campaign.recipients.filter(status__in=[

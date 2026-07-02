@@ -14,7 +14,10 @@ def process_campaign(self, campaign_id):
         return {"status": "not_found"}
 
     contacts = Contact.objects.filter(organization=campaign.organization, is_active=True)
-    if campaign.contact_group_id:
+    contact_ids = (campaign.audience_filter or {}).get("contact_ids", [])
+    if contact_ids:
+        contacts = contacts.filter(id__in=contact_ids)
+    elif campaign.contact_group_id:
         contacts = contacts.filter(groups=campaign.contact_group)
     if campaign.audience_filter:
         tags = campaign.audience_filter.get("tags", [])
@@ -56,8 +59,10 @@ def process_campaign(self, campaign_id):
             wa_id = result["messages"][0].get("id", "")
 
         if result.get("error"):
+            from apps.campaigns.campaign_analytics import _parse_failure_code
             recipient.status = CampaignRecipient.Status.FAILED
             recipient.error_message = str(result["error"])
+            recipient.failure_code = _parse_failure_code(recipient.error_message)
             failed += 1
         else:
             recipient.status = CampaignRecipient.Status.SENT

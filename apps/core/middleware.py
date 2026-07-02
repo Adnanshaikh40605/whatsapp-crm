@@ -79,7 +79,7 @@ class StaffAccessMiddleware(MiddlewareMixin):
     def process_request(self, request):
         if not request.user.is_authenticated or request.user.is_superuser:
             return None
-        if not request.path.startswith("/api/v1/"):
+        if not (request.path.startswith("/api/v1/") or request.path.startswith("/api/")):
             return None
         if staff_may_access_path(request.path):
             return None

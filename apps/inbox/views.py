@@ -1,3 +1,4 @@
+from django.db.models import DurationField, ExpressionWrapper, F
 from django.utils import timezone
 from django.db import transaction
 from rest_framework import viewsets
@@ -26,7 +27,11 @@ class ConversationViewSet(viewsets.ModelViewSet):
     ordering_fields = ["last_message_at", "created_at"]
 
     def get_queryset(self):
-        return Conversation.objects.select_related("contact", "assigned_to").all()
+        qs = Conversation.objects.select_related("contact", "assigned_to").all()
+        delivery_status = self.request.query_params.get("delivery_status")
+        if delivery_status:
+            qs = qs.filter(last_outbound_status=delivery_status)
+        return qs
 
     def perform_create(self, serializer):
         contact_id = serializer.validated_data.pop("contact_id")
@@ -71,6 +76,48 @@ class ConversationViewSet(viewsets.ModelViewSet):
         conversation.save(update_fields=["unread_count", "updated_at"])
         return APIResponse.success(ConversationSerializer(conversation).data)
 
+    @action(detail=True, methods=["get"], url_path="message-analytics")
+    def message_analytics(self, request, pk=None):
+        conversation = self.get_object()
+        outbound = Message.objects.filter(
+            conversation=conversation,
+            direction=Message.Direction.OUTBOUND,
+            is_internal_note=False,
+        )
+        total_sent = outbound.exclude(status=Message.Status.PENDING).count()
+        total_delivered = outbound.filter(
+            status__in=[Message.Status.DELIVERED, Message.Status.READ]
+        ).count()
+        total_read = outbound.filter(status=Message.Status.READ).count()
+        total_failed = outbound.filter(status=Message.Status.FAILED).count()
+
+        last_delivered = outbound.filter(delivered_at__isnull=False).order_by("-delivered_at").first()
+        last_read = outbound.filter(read_at__isnull=False).order_by("-read_at").first()
+
+        read_pairs = outbound.filter(
+            sent_at__isnull=False,
+            read_at__isnull=False,
+        ).annotate(
+            read_delay=ExpressionWrapper(F("read_at") - F("sent_at"), output_field=DurationField())
+        )
+        avg_read_seconds = None
+        delays = [row.read_delay.total_seconds() for row in read_pairs if row.read_delay]
+        if delays:
+            avg_read_seconds = sum(delays) / len(delays)
+
+        read_rate = round((total_read / total_sent) * 100, 1) if total_sent else 0
+
+        return APIResponse.success({
+            "total_sent": total_sent,
+            "total_delivered": total_delivered,
+            "total_read": total_read,
+            "total_failed": total_failed,
+            "read_rate": read_rate,
+            "last_delivered_at": last_delivered.delivered_at.isoformat() if last_delivered else None,
+            "last_read_at": last_read.read_at.isoformat() if last_read else None,
+            "average_read_seconds": avg_read_seconds,
+        })
+
 
 class MessageViewSet(viewsets.ModelViewSet):
     serializer_class = MessageSerializer
@@ -90,9 +137,22 @@ class MessageViewSet(viewsets.ModelViewSet):
         conversation = message.conversation
         conversation.last_message_at = timezone.now()
         conversation.last_message_preview = message.content[:255]
-        conversation.save(update_fields=["last_message_at", "last_message_preview", "updated_at"])
+        conversation.metadata = {
+            **(conversation.metadata or {}),
+            "last_message_direction": Message.Direction.OUTBOUND,
+        }
+        conversation.save(update_fields=["last_message_at", "last_message_preview", "metadata", "updated_at"])
 
         if not message.is_internal_note:
+            from apps.inbox.message_status import apply_message_status_update
+            from apps.inbox.realtime import broadcast_inbox_event
+
+            apply_message_status_update(message, Message.Status.PENDING, broadcast=False)
+            message_data = MessageSerializer(message).data
+            conversation_data = ConversationSerializer(conversation).data
+            org_id = str(self.request.organization.id)
+            broadcast_inbox_event(org_id, {"type": "message_created", "message": message_data})
+            broadcast_inbox_event(org_id, {"type": "conversation_updated", "conversation": conversation_data})
             send_whatsapp_message.delay(str(message.id))
 
     @action(detail=False, methods=["post"], url_path="send-sms")

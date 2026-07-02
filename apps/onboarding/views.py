@@ -218,8 +218,8 @@ class WhatsAppWebhookView(APIView):
         from apps.inbox.services import WebhookProcessor
 
         try:
-            task_result = process_inbound_webhook.delay(request.data)
-            webhook_logger.info("WhatsApp webhook processed: %s", task_result.result)
+            process_inbound_webhook.delay(request.data)
+            webhook_logger.info("WhatsApp webhook queued for processing")
         except Exception as exc:
             webhook_logger.warning("Webhook task failed, processing inline: %s", exc)
             result = WebhookProcessor(request.data).process()

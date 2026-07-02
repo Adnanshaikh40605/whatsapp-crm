@@ -14,6 +14,7 @@ env = environ.Env(
 environ.Env.read_env(BASE_DIR / ".env")
 
 SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me-in-production")
+EMBED_SSO_SECRET = env("EMBED_SSO_SECRET", default=SECRET_KEY)
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
@@ -46,6 +47,7 @@ INSTALLED_APPS = [
     "apps.invoices",
     "apps.analytics",
     "apps.api_platform",
+    "apps.embed_api",
     "apps.ai",
     "apps.whatsapp_crm",
     "apps.sms_crm",
@@ -143,11 +145,26 @@ SIMPLE_JWT = {
 
 from corsheaders.defaults import default_headers
 
-CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS")
+from config.cors import merge_cors_origins
+
+# Railway / .env: comma-separated list, e.g.
+# CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,https://pestcontrol-crm-frontend.vercel.app
+CORS_ALLOWED_ORIGINS = merge_cors_origins(env.list("CORS_ALLOWED_ORIGINS", default=[]))
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + [
+    "authorization",
+    "content-type",
     "x-organization-id",
 ]
+CORS_ALLOW_METHODS = [
+    "DELETE",
+    "GET",
+    "OPTIONS",
+    "PATCH",
+    "POST",
+    "PUT",
+]
+CORS_PREFLIGHT_MAX_AGE = 86400
 
 # Celery
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")

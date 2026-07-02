@@ -1,4 +1,5 @@
 from .base import *  # noqa: F403
+from config.cors import merge_cors_origins
 
 DEBUG = True
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
@@ -10,10 +11,7 @@ DATABASES = {
     )
 }
 
-CORS_ALLOWED_ORIGINS = env.list(  # noqa: F405
-    "CORS_ALLOWED_ORIGINS",
-    default=["http://localhost:5173", "http://127.0.0.1:5173"],
-)
+CORS_ALLOWED_ORIGINS = merge_cors_origins(env.list("CORS_ALLOWED_ORIGINS", default=[]))  # noqa: F405
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 

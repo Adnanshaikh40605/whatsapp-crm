@@ -28,8 +28,9 @@ class Conversation(TenantModel):
     priority = models.CharField(max_length=10, default="normal")
     last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_message_preview = models.CharField(max_length=255, blank=True)
+    last_outbound_status = models.CharField(max_length=20, blank=True, db_index=True)
     unread_count = models.PositiveIntegerField(default=0)
-    is_bot_active = models.BooleanField(default=True)
+    is_bot_active = models.BooleanField(default=False)
     sla_due_at = models.DateTimeField(null=True, blank=True)
     metadata = models.JSONField(default=dict, blank=True)
 
@@ -64,6 +65,7 @@ class Message(TenantModel):
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
+        SENDING = "sending", "Sending"
         SENT = "sent", "Sent"
         DELIVERED = "delivered", "Delivered"
         READ = "read", "Read"
@@ -83,6 +85,11 @@ class Message(TenantModel):
     whatsapp_message_id = models.CharField(max_length=255, blank=True, db_index=True)
     provider_message_id = models.CharField(max_length=255, blank=True, db_index=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    failed_at = models.DateTimeField(null=True, blank=True)
+    error_reason = models.TextField(blank=True)
     sender = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

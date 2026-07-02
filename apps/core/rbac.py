@@ -24,6 +24,9 @@ STAFF_ALLOWED_API_PREFIXES = (
     "/api/v1/auth/",
     "/api/v1/organizations/",
     "/api/v1/inbox/",
+    "/api/auth/",
+    "/api/inbox/",
+    "/api/customers/",
 )
 
 

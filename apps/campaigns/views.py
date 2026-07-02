@@ -1,3 +1,5 @@
+from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -7,7 +9,15 @@ from rest_framework.permissions import IsAuthenticated
 from apps.core.exceptions import APIResponse
 from apps.core.permissions import IsOrganizationMember
 from apps.campaigns.meta import MetaTemplateService
-from apps.campaigns.models import Campaign, MediaAsset, WhatsAppTemplate
+from apps.campaigns.models import Campaign, CampaignRecipient, MediaAsset, WhatsAppTemplate
+from apps.campaigns.campaign_analytics import (
+    export_report,
+    get_overview,
+    get_recipients,
+    get_tab_stats,
+    _parse_failure_code,
+    _can_retry,
+)
 from apps.campaigns.serializers import CampaignSerializer, MediaAssetSerializer, WhatsAppTemplateSerializer
 
 
@@ -87,6 +97,29 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @action(detail=True, methods=["post"], url_path="send_test")
+    def send_test(self, request, pk=None):
+        template = self.get_object()
+        if template.status != WhatsAppTemplate.Status.APPROVED:
+            return APIResponse.error("Template must be approved before sending a test message.", status_code=400)
+
+        phone = str(request.data.get("phone", "")).strip()
+        if not phone:
+            return APIResponse.error("Phone number is required.", status_code=400)
+
+        from apps.campaigns.meta import build_template_send_components
+        from apps.core.whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService(request.organization)
+        body_params = request.data.get("body_params")
+        if body_params is None:
+            body_params = list(template.examples.values()) if isinstance(template.examples, dict) else []
+        components = build_template_send_components(template, body_params, wa=wa)
+        result = wa.send_template(phone, template.name, template.language, components)
+        if result.get("error"):
+            return APIResponse.error(str(result["error"]), status_code=400)
+        return APIResponse.success(result, message="Test template sent")
+
 
 class CampaignViewSet(viewsets.ModelViewSet):
     serializer_class = CampaignSerializer
@@ -136,26 +169,105 @@ class CampaignViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"])
     def dashboard(self, request, pk=None):
         campaign = self.get_object()
+        overview = get_overview(campaign)
+        return APIResponse.success({**overview["summary"], **overview["campaign"], **overview})
+
+    @action(detail=True, methods=["get"], url_path="analytics/overview")
+    def analytics_overview(self, request, pk=None):
+        campaign = self.get_object()
+        return APIResponse.success(get_overview(campaign))
+
+    @action(detail=True, methods=["get"], url_path="analytics/recipients")
+    def analytics_recipients(self, request, pk=None):
+        campaign = self.get_object()
+        tab = request.query_params.get("tab", "sent")
+        page = int(request.query_params.get("page", 1))
+        page_size = min(int(request.query_params.get("page_size", 25)), 100)
+        data = get_recipients(
+            campaign,
+            tab,
+            search=request.query_params.get("search", ""),
+            preset=request.query_params.get("preset", ""),
+            date_from=request.query_params.get("date_from"),
+            date_to=request.query_params.get("date_to"),
+            read_filter=request.query_params.get("read_filter", ""),
+            page=page,
+            page_size=page_size,
+        )
+        return APIResponse.success({
+            "stats": get_tab_stats(campaign, tab),
+            **data,
+        })
+
+    @action(detail=True, methods=["get"], url_path="analytics/export")
+    def analytics_export(self, request, pk=None):
+        campaign = self.get_object()
+        tab = request.query_params.get("tab", "overview")
+        fmt = request.query_params.get("format", "csv")
+        content, filename, content_type = export_report(campaign, tab, fmt)
+        response = HttpResponse(content, content_type=content_type)
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=["post"], url_path="analytics/email-report")
+    def analytics_email_report(self, request, pk=None):
+        campaign = self.get_object()
+        tab = request.data.get("tab", "overview")
+        email = str(request.data.get("email", "")).strip()
+        if not email:
+            return APIResponse.error("Email address is required.", status_code=400)
+        content, filename, _ = export_report(campaign, tab, request.data.get("format", "xlsx"))
+        # SMTP not configured — return downloadable payload for now
         return APIResponse.success(
             {
-                "name": campaign.name,
-                "status": campaign.status,
-                "total_recipients": campaign.total_recipients,
-                "sent_count": campaign.sent_count,
-                "delivered_count": campaign.delivered_count,
-                "read_count": campaign.read_count,
-                "reply_count": campaign.reply_count,
-                "click_count": campaign.click_count,
-                "failed_count": campaign.failed_count,
-                "delivery_rate": (
-                    round(campaign.delivered_count / campaign.sent_count * 100, 1)
-                    if campaign.sent_count
-                    else 0
-                ),
-                "read_rate": (
-                    round(campaign.read_count / campaign.delivered_count * 100, 1)
-                    if campaign.delivered_count
-                    else 0
-                ),
-            }
+                "email": email,
+                "tab": tab,
+                "filename": filename,
+                "message": f"Report prepared for {email}. Configure SMTP to enable automatic email delivery.",
+            },
+            message="Report queued",
         )
+
+    @action(detail=True, methods=["post"], url_path="retry-recipient")
+    def retry_recipient(self, request, pk=None):
+        campaign = self.get_object()
+        recipient_id = request.data.get("recipient_id")
+        try:
+            recipient = campaign.recipients.select_related("contact").get(id=recipient_id)
+        except CampaignRecipient.DoesNotExist:
+            return APIResponse.error("Recipient not found.", status_code=404)
+
+        code = recipient.failure_code or _parse_failure_code(recipient.error_message)
+        if not _can_retry(code):
+            return APIResponse.error("This failure cannot be retried.", status_code=400)
+
+        from apps.core.whatsapp_service import WhatsAppService
+
+        wa = WhatsAppService(request.organization)
+        if campaign.template:
+            result = wa.send_template(
+                recipient.contact.phone,
+                campaign.template.name,
+                campaign.template.language,
+            )
+        else:
+            result = wa.send_text(recipient.contact.phone, campaign.message_content or "Hello from WhatsFlow!")
+
+        if result.get("error"):
+            recipient.status = CampaignRecipient.Status.FAILED
+            recipient.error_message = str(result["error"])
+            recipient.failure_code = _parse_failure_code(recipient.error_message)
+            recipient.save()
+            return APIResponse.error(str(result["error"]), status_code=400)
+
+        wa_id = ""
+        if result.get("messages"):
+            wa_id = result["messages"][0].get("id", "")
+
+        recipient.status = CampaignRecipient.Status.SENT
+        recipient.sent_at = timezone.now()
+        recipient.whatsapp_message_id = wa_id
+        recipient.error_message = ""
+        recipient.failure_code = ""
+        recipient.save()
+        return APIResponse.success({"recipient_id": str(recipient.id)}, message="Message resent")

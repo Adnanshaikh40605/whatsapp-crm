@@ -177,10 +177,28 @@ class CampaignRecipient(TenantModel):
     replied_at = models.DateTimeField(null=True, blank=True)
     clicked_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True)
+    failure_code = models.CharField(max_length=50, blank=True)
 
     class Meta:
         unique_together = [("campaign", "contact")]
         indexes = [models.Index(fields=["organization", "campaign", "status"])]
+
+
+class CampaignClickEvent(TenantModel):
+    campaign = models.ForeignKey(Campaign, on_delete=models.CASCADE, related_name="click_events")
+    recipient = models.ForeignKey(CampaignRecipient, on_delete=models.CASCADE, related_name="click_events")
+    contact = models.ForeignKey("crm.Contact", on_delete=models.CASCADE, related_name="campaign_click_events")
+    button_type = models.CharField(max_length=30, blank=True)
+    button_name = models.CharField(max_length=255, blank=True)
+    button_url = models.CharField(max_length=500, blank=True)
+    click_count = models.PositiveIntegerField(default=1)
+    clicked_at = models.DateTimeField()
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "campaign", "clicked_at"]),
+            models.Index(fields=["organization", "campaign", "button_name"]),
+        ]
 
 
 class AdAttribution(TenantModel):

@@ -1,4 +1,5 @@
 from .base import *  # noqa: F403
+from config.cors import merge_cors_origins
 
 DEBUG = False
 
@@ -23,15 +24,8 @@ SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 
-# Production CORS — always allow frontend on driveronhire.ai
-_cors_from_env = env.list("CORS_ALLOWED_ORIGINS", default=[])  # noqa: F405
-CORS_ALLOWED_ORIGINS = list({
-    *_cors_from_env,
-    "https://www.driveronhire.ai",
-    "https://driveronhire.ai",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-})
+# Production CORS — env var from Railway merged with embed CRM defaults (see config/cors.py)
+CORS_ALLOWED_ORIGINS = merge_cors_origins(env.list("CORS_ALLOWED_ORIGINS", default=[]))  # noqa: F405
 
 WHATSAPP_WEBHOOK_URL = env(  # noqa: F405
     "WHATSAPP_WEBHOOK_URL",

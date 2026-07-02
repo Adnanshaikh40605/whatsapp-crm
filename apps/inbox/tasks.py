@@ -28,7 +28,9 @@ def send_whatsapp_message(self, message_id):
     elif message.message_type == Message.MessageType.DOCUMENT and message.media_url:
         result = wa.send_media(phone, "document", message.media_url, message.content)
     elif message.template_name:
-        result = wa.send_template(phone, message.template_name)
+        components = (message.metadata or {}).get("template_components") or []
+        language = (message.metadata or {}).get("template_language") or "en"
+        result = wa.send_template(phone, message.template_name, language, components)
     else:
         result = wa.send_text(phone, message.content)
 

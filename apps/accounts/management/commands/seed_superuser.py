@@ -99,17 +99,22 @@ class Command(BaseCommand):
     help = "Seed internal multi-company setup: owner account + all businesses"
 
     def handle(self, *args, **options):
+        username = "adnan"
         email = "test@gmail.com"
         password = "1234"
 
         # Deactivate legacy single-tenant seed org
         Organization.objects.filter(slug="test-org").update(is_active=False)
 
-        owner, _ = User.objects.get_or_create(
-            email=email,
-            defaults={"first_name": "test", "last_name": "", "is_staff": True, "is_superuser": True},
-        )
-        owner.first_name = "test"
+        owner = User.objects.filter(username=username).first()
+        if owner is None:
+            owner = User.objects.filter(email=email).first()
+        if owner is None:
+            owner = User(username=username, email=email)
+
+        owner.username = username
+        owner.email = email
+        owner.first_name = "Adnan"
         owner.last_name = ""
         owner.set_password(password)
         owner.is_staff = True
@@ -194,5 +199,5 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"  ✓ {org.name} ({org.industry})"))
 
         self.stdout.write(self.style.SUCCESS(f"\nInternal multi-company setup complete"))
-        self.stdout.write(self.style.SUCCESS(f"Owner login: {owner.first_name} / {password}"))
+        self.stdout.write(self.style.SUCCESS(f"Owner login: {owner.username} / {password}"))
         self.stdout.write(self.style.SUCCESS(f"Companies: {', '.join(c['name'] for c in COMPANIES)}"))
