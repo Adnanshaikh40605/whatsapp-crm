@@ -12,4 +12,4 @@
 #
 # 3. WebSocket: wss://api.driveronhire.ai/ws/inbox/?token=<access_token>
 #
-# Generate API keys in WhatsFlow: Settings → Platform → API Keys (scopes: embed, inbox)
+# Generate API keys in WhatsFlow: Settings → API Keys (scopes: embed, inbox, read, write)

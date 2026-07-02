@@ -26,7 +26,7 @@ EXTERNAL_ROLE_MAP = {
     "viewer": EMBED_ROLE_STAFF,
 }
 
-EMBED_SCOPES = ("embed", "inbox", "read", "write")
+EMBED_SCOPES = ("embed", "inbox", "read", "write", "customers")
 
 
 def map_org_role(role: str) -> str:

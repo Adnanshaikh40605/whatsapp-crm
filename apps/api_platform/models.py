@@ -8,11 +8,12 @@ from apps.core.models import TenantModel
 
 class APIKey(TenantModel):
     name = models.CharField(max_length=100)
-    key_prefix = models.CharField(max_length=8)
+    key_prefix = models.CharField(max_length=12)
     key_hash = models.CharField(max_length=128)
     scopes = models.JSONField(default=list)
     is_active = models.BooleanField(default=True)
     last_used_at = models.DateTimeField(null=True, blank=True)
+    last_used_ip = models.GenericIPAddressField(null=True, blank=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="api_keys"

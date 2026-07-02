@@ -23,7 +23,16 @@ def hash_api_key(raw_key: str) -> str:
     return hashlib.sha256(raw_key.encode()).hexdigest()
 
 
-def validate_api_key(raw_key: str) -> APIKey | None:
+def _client_ip(request) -> str | None:
+    if request is None:
+        return None
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR")
+
+
+def validate_api_key(raw_key: str, request=None) -> APIKey | None:
     if not raw_key or not raw_key.startswith("wf_"):
         return None
     key_hash = hash_api_key(raw_key)
@@ -39,8 +48,13 @@ def validate_api_key(raw_key: str) -> APIKey | None:
     scopes = set(api_key.scopes or [])
     if scopes and not scopes.intersection(EMBED_SCOPES):
         return None
+    client_ip = _client_ip(request)
+    update_fields = ["last_used_at"]
     api_key.last_used_at = timezone.now()
-    api_key.save(update_fields=["last_used_at"])
+    if client_ip:
+        api_key.last_used_ip = client_ip
+        update_fields.append("last_used_ip")
+    api_key.save(update_fields=update_fields)
     return api_key
 
 
@@ -75,7 +89,7 @@ class EmbedAPIKeyAuthentication(authentication.BaseAuthentication):
         if not raw.startswith("wf_"):
             return None
 
-        api_key = validate_api_key(raw)
+        api_key = validate_api_key(raw, request=request)
         if not api_key:
             raise AuthenticationFailed("Invalid or expired API key.")
 

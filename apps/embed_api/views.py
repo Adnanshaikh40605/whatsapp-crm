@@ -76,7 +76,7 @@ class SSOLoginView(APIView):
         org_id = data.get("organization_id")
         external_user = data.get("external_user") or {}
 
-        api_key = validate_api_key(api_key_raw) if api_key_raw else None
+        api_key = validate_api_key(api_key_raw, request=request) if api_key_raw else None
         if not api_key and not embed_token:
             return APIResponse.error("api_key or embed_token is required.", status_code=400)
 
