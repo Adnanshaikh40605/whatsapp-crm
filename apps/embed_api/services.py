@@ -1,5 +1,6 @@
 """Shared helpers for embed inbox + customer APIs."""
 
+from django.db import transaction
 from django.utils import timezone
 
 from apps.crm.models import Contact
@@ -84,36 +85,48 @@ def queue_outbound_message(
     template_language: str = "en",
     template_components: list | None = None,
 ) -> Message:
-    message = Message.objects.create(
-        organization=organization,
-        conversation=conversation,
-        channel=Message.Channel.WHATSAPP,
-        direction=Message.Direction.OUTBOUND,
-        message_type=message_type,
-        content=content,
-        media_url=media_url,
-        template_name=template_name,
-        sender=user,
-        metadata={
-            "template_language": template_language,
-            "template_components": template_components or [],
-            "embed_api": True,
-        },
-    )
-    now = timezone.now()
-    conversation.last_message_at = now
-    conversation.last_message_preview = content[:255]
-    conversation.metadata = {
-        **(conversation.metadata or {}),
-        "last_message_direction": Message.Direction.OUTBOUND,
-    }
-    conversation.save(update_fields=["last_message_at", "last_message_preview", "metadata", "updated_at"])
-
     from apps.inbox.message_status import apply_message_status_update
     from apps.inbox.realtime import broadcast_outbound_queued
 
-    apply_message_status_update(message, Message.Status.PENDING, broadcast=False)
-    broadcast_outbound_queued(str(organization.id), message, conversation)
+    with transaction.atomic():
+        message = Message.objects.create(
+            organization=organization,
+            conversation=conversation,
+            channel=Message.Channel.WHATSAPP,
+            direction=Message.Direction.OUTBOUND,
+            message_type=message_type,
+            content=content,
+            media_url=media_url,
+            template_name=template_name,
+            sender=user,
+            status=Message.Status.PENDING,
+            metadata={
+                "template_language": template_language,
+                "template_components": template_components or [],
+                "embed_api": True,
+            },
+        )
+        now = timezone.now()
+        conversation.last_message_at = now
+        conversation.last_message_preview = content[:255]
+        conversation.last_outbound_status = Message.Status.PENDING
+        conversation.metadata = {
+            **(conversation.metadata or {}),
+            "last_message_direction": Message.Direction.OUTBOUND,
+        }
+        conversation.save(
+            update_fields=[
+                "last_message_at",
+                "last_message_preview",
+                "last_outbound_status",
+                "metadata",
+                "updated_at",
+            ]
+        )
+
+        apply_message_status_update(message, Message.Status.PENDING, broadcast=False)
+        broadcast_outbound_queued(str(organization.id), message, conversation)
+
     send_whatsapp_message.delay(str(message.id))
     return message
 

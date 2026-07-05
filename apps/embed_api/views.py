@@ -26,6 +26,7 @@ from apps.embed_api.services import (
     serialize_customer,
 )
 from apps.inbox.models import Conversation, Message
+from apps.inbox.realtime import serialize_ws_message
 from apps.embed_api.authentication import EmbedAuthentication
 from rest_framework.permissions import IsAuthenticated
 
@@ -188,7 +189,7 @@ class SendMessageView(EmbedAPIView):
             message_type=Message.MessageType.TEXT,
         )
         return APIResponse.success(
-            {"message_id": str(message.id), "status": message.status},
+            serialize_ws_message(message),
             message="Message queued",
             status_code=201,
         )
@@ -227,7 +228,7 @@ class SendTemplateView(EmbedAPIView):
             template_components=components,
         )
         return APIResponse.success(
-            {"message_id": str(message.id), "template": template.name},
+            serialize_ws_message(message),
             message="Template queued",
             status_code=201,
         )
@@ -255,7 +256,7 @@ class SendMediaView(EmbedAPIView):
             media_url=data["media_url"],
         )
         return APIResponse.success(
-            {"message_id": str(message.id), "status": message.status},
+            serialize_ws_message(message),
             message="Media queued",
             status_code=201,
         )

@@ -139,11 +139,20 @@ class MessageViewSet(viewsets.ModelViewSet):
         conversation = message.conversation
         conversation.last_message_at = timezone.now()
         conversation.last_message_preview = message.content[:255]
+        conversation.last_outbound_status = Message.Status.PENDING
         conversation.metadata = {
             **(conversation.metadata or {}),
             "last_message_direction": Message.Direction.OUTBOUND,
         }
-        conversation.save(update_fields=["last_message_at", "last_message_preview", "metadata", "updated_at"])
+        conversation.save(
+            update_fields=[
+                "last_message_at",
+                "last_message_preview",
+                "last_outbound_status",
+                "metadata",
+                "updated_at",
+            ]
+        )
 
         if not message.is_internal_note:
             from apps.inbox.message_status import apply_message_status_update
