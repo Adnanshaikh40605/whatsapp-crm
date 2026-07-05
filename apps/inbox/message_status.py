@@ -2,11 +2,15 @@
 
 from datetime import datetime, timezone as dt_timezone
 
+from django.core.cache import cache
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.inbox.models import Conversation, Message
 from apps.inbox.realtime import broadcast_message_status
 
+PENDING_STATUS_CACHE_PREFIX = "wa_pending_status:"
+PENDING_STATUS_TTL = 86400
 
 STATUS_RANK = {
     Message.Status.PENDING: 0,
@@ -45,25 +49,88 @@ def should_apply_status(current: str, new: str) -> bool:
     return STATUS_RANK.get(new, 0) >= STATUS_RANK.get(current, 0)
 
 
+def serialize_embed_status_message(message: Message) -> dict:
+    """Full message fields so embed CRM can patch ticks without a refresh."""
+    return {
+        "id": str(message.id),
+        "conversation_id": str(message.conversation_id),
+        "direction": message.direction,
+        "message_type": message.message_type,
+        "content": message.content,
+        "status": message.status,
+        "created_at": message.created_at.isoformat() if message.created_at else None,
+        "whatsapp_message_id": message.whatsapp_message_id or None,
+        "sent_at": message.sent_at.isoformat() if message.sent_at else None,
+        "delivered_at": message.delivered_at.isoformat() if message.delivered_at else None,
+        "read_at": message.read_at.isoformat() if message.read_at else None,
+        "failed_at": message.failed_at.isoformat() if message.failed_at else None,
+        "error_reason": message.error_reason or None,
+    }
+
+
 def serialize_message_status(message: Message) -> dict:
     return {
         "type": "message_status_updated",
-        "message": {
-            "id": str(message.id),
-            "conversation_id": str(message.conversation_id),
-            "status": message.status,
-            "whatsapp_message_id": message.whatsapp_message_id,
-            "sent_at": message.sent_at.isoformat() if message.sent_at else None,
-            "delivered_at": message.delivered_at.isoformat() if message.delivered_at else None,
-            "read_at": message.read_at.isoformat() if message.read_at else None,
-            "failed_at": message.failed_at.isoformat() if message.failed_at else None,
-            "error_reason": message.error_reason or None,
-        },
+        "message": serialize_embed_status_message(message),
         "conversation": {
             "id": str(message.conversation_id),
             "last_outbound_status": message.conversation.last_outbound_status,
         },
     }
+
+
+def find_message_for_wa_status(org, wa_id: str) -> Message | None:
+    if not wa_id:
+        return None
+    return (
+        Message.all_objects.filter(organization=org)
+        .filter(Q(whatsapp_message_id=wa_id) | Q(provider_message_id=wa_id))
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def buffer_pending_status(
+    wa_id: str,
+    *,
+    status: str,
+    event_time=None,
+    raw_payload: dict | None = None,
+) -> None:
+    key = f"{PENDING_STATUS_CACHE_PREFIX}{wa_id}"
+    pending = cache.get(key) or []
+    pending.append(
+        {
+            "status": status,
+            "event_time": event_time,
+            "raw_payload": raw_payload,
+        }
+    )
+    cache.set(key, pending, PENDING_STATUS_TTL)
+
+
+def drain_pending_statuses(message: Message, *, broadcast: bool = True) -> Message:
+    wa_id = message.whatsapp_message_id
+    if not wa_id:
+        return message
+
+    key = f"{PENDING_STATUS_CACHE_PREFIX}{wa_id}"
+    pending = cache.get(key) or []
+    if not pending:
+        return message
+
+    cache.delete(key)
+    for item in pending:
+        message = apply_message_status_update(
+            message,
+            item["status"],
+            event_time=item.get("event_time"),
+            raw_payload=item.get("raw_payload"),
+            broadcast=broadcast,
+            include_embed_alias=True,
+        )
+        message.refresh_from_db()
+    return message
 
 
 def apply_message_status_update(
@@ -74,6 +141,7 @@ def apply_message_status_update(
     error_reason: str = "",
     raw_payload: dict | None = None,
     broadcast: bool = True,
+    include_embed_alias: bool = True,
 ) -> Message:
     if not should_apply_status(message.status, new_status):
         return message
@@ -122,6 +190,6 @@ def apply_message_status_update(
         message.conversation.refresh_from_db(fields=["last_outbound_status"])
 
     if broadcast:
-        broadcast_message_status(message)
+        broadcast_message_status(message, include_embed_alias=include_embed_alias)
 
     return message

@@ -380,16 +380,40 @@ class WebhookProcessor:
         wa_id = status.get("id", "")
         msg_status = status.get("status", "")
 
-        message = Message.objects.filter(organization=org, whatsapp_message_id=wa_id).first()
-        if not message:
-            logger.warning(
-                "WhatsApp status webhook: no message found for wamid=%s org=%s",
-                wa_id,
-                org.name,
-            )
-            return
+        from apps.inbox.message_status import (
+            apply_message_status_update,
+            buffer_pending_status,
+            find_message_for_wa_status,
+        )
 
-        from apps.inbox.message_status import apply_message_status_update
+        message = find_message_for_wa_status(org, wa_id)
+        if not message:
+            status_map = {
+                "sent": Message.Status.SENT,
+                "delivered": Message.Status.DELIVERED,
+                "read": Message.Status.READ,
+                "failed": Message.Status.FAILED,
+            }
+            new_status = status_map.get(msg_status)
+            if new_status and wa_id:
+                buffer_pending_status(
+                    wa_id,
+                    status=new_status,
+                    event_time=status.get("timestamp"),
+                    raw_payload=status,
+                )
+                webhook_logger.info(
+                    "WhatsApp status buffered (message not ready): status=%s wamid=%s",
+                    msg_status,
+                    wa_id,
+                )
+            else:
+                webhook_logger.warning(
+                    "WhatsApp status webhook: no message found for wamid=%s org=%s",
+                    wa_id,
+                    org.name,
+                )
+            return
 
         status_map = {
             "sent": Message.Status.SENT,
