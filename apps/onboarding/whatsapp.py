@@ -67,18 +67,60 @@ class WhatsAppConnectService:
         }
 
     def _configure_webhook(self):
-        """Subscribe WABA to webhook events."""
+        """Subscribe app to WhatsApp webhook events via Meta Graph API."""
         webhook_url = getattr(settings, "WHATSAPP_WEBHOOK_URL", "")
         verify_token = getattr(settings, "WHATSAPP_VERIFY_TOKEN", "whatsflow_verify")
         self.org.settings = {
-            **self.org.settings,
+            **(self.org.settings or {}),
             "webhook_url": webhook_url,
             "webhook_verify_token": verify_token,
-            "webhook_events": [
-                "messages", "message_deliveries", "message_reads", "message_echoes",
-            ],
+            "webhook_events": ["messages"],
         }
         self.org.save(update_fields=["settings"])
+        result = self.subscribe_whatsapp_webhooks()
+        self.org.settings = {
+            **(self.org.settings or {}),
+            "webhook_subscription": result,
+        }
+        self.org.save(update_fields=["settings"])
+        return result
+
+    @staticmethod
+    def subscribe_whatsapp_webhooks() -> dict:
+        """Register callback URL with Meta for whatsapp_business_account messages."""
+        app_id = getattr(settings, "META_APP_ID", "")
+        app_secret = getattr(settings, "META_APP_SECRET", "")
+        webhook_url = getattr(settings, "WHATSAPP_WEBHOOK_URL", "")
+        verify_token = getattr(settings, "WHATSAPP_VERIFY_TOKEN", "whatsflow_verify")
+
+        if not app_id or not app_secret or not webhook_url:
+            logger.warning(
+                "WhatsApp webhook subscription skipped: missing app_id, app_secret, or webhook URL"
+            )
+            return {"ok": False, "error": "missing_config"}
+
+        app_access_token = f"{app_id}|{app_secret}"
+        try:
+            resp = requests.post(
+                f"{WhatsAppConnectService.GRAPH_API}/{app_id}/subscriptions",
+                data={
+                    "object": "whatsapp_business_account",
+                    "callback_url": webhook_url,
+                    "verify_token": verify_token,
+                    "fields": "messages",
+                    "access_token": app_access_token,
+                },
+                timeout=20,
+            )
+            payload = resp.json()
+            if resp.ok:
+                logger.info("Meta webhook subscription succeeded: %s", payload)
+                return {"ok": True, "response": payload}
+            logger.warning("Meta webhook subscription failed: %s", payload)
+            return {"ok": False, "error": payload}
+        except requests.RequestException as exc:
+            logger.warning("Meta webhook subscription request failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
 
     def get_embedded_signup_config(self):
         """Return config needed for Meta Embedded Signup frontend SDK."""

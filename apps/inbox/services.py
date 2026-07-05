@@ -78,9 +78,27 @@ class WebhookProcessor:
 
     def _get_org(self, phone_number_id):
         from apps.organizations.models import Organization
-        return Organization.objects.filter(
-            whatsapp_phone_number_id=phone_number_id, is_active=True,
+
+        if not phone_number_id:
+            return None
+
+        org = Organization.objects.filter(
+            whatsapp_phone_number_id=phone_number_id,
+            is_active=True,
         ).first()
+        if org:
+            return org
+
+        webhook_logger.warning(
+            "No org for phone_number_id=%s (configured ids: %s)",
+            phone_number_id,
+            list(
+                Organization.objects.filter(is_active=True, whatsapp_connected=True)
+                .exclude(whatsapp_phone_number_id="")
+                .values_list("whatsapp_phone_number_id", flat=True)
+            ),
+        )
+        return None
 
     def _process_inbound(self, msg, phone_number_id, value):
         msg_type_raw = msg.get("type", "text")

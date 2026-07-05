@@ -43,10 +43,13 @@ def serialize_conversation_detail(conversation: Conversation) -> dict:
         "messages": [
             {
                 "id": str(msg.id),
+                "conversation_id": str(conversation.id),
                 "direction": msg.direction,
+                "message_type": msg.message_type,
                 "type": msg.message_type,
                 "content": msg.content,
                 "status": msg.status,
+                "whatsapp_message_id": msg.whatsapp_message_id or None,
                 "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
                 "delivered_at": msg.delivered_at.isoformat() if msg.delivered_at else None,
                 "read_at": msg.read_at.isoformat() if msg.read_at else None,
