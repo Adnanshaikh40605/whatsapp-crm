@@ -5,7 +5,7 @@ from datetime import datetime, timezone as dt_timezone
 from django.utils import timezone
 
 from apps.inbox.models import Conversation, Message
-from apps.inbox.realtime import broadcast_inbox_event
+from apps.inbox.realtime import broadcast_message_status
 
 
 STATUS_RANK = {
@@ -122,14 +122,6 @@ def apply_message_status_update(
         message.conversation.refresh_from_db(fields=["last_outbound_status"])
 
     if broadcast:
-        payload = serialize_message_status(message)
-        broadcast_inbox_event(str(message.organization_id), payload)
-        embed_type = {
-            Message.Status.SENT: "message_sent",
-            Message.Status.DELIVERED: "message_delivered",
-            Message.Status.READ: "message_read",
-        }.get(new_status)
-        if embed_type:
-            broadcast_inbox_event(str(message.organization_id), {**payload, "type": embed_type})
+        broadcast_message_status(message)
 
     return message

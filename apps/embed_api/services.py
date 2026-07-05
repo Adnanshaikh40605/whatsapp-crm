@@ -4,7 +4,6 @@ from django.utils import timezone
 
 from apps.crm.models import Contact
 from apps.inbox.models import Conversation, Message
-from apps.inbox.serializers import MessageSerializer
 from apps.inbox.tasks import send_whatsapp_message
 
 
@@ -111,13 +110,10 @@ def queue_outbound_message(
     conversation.save(update_fields=["last_message_at", "last_message_preview", "metadata", "updated_at"])
 
     from apps.inbox.message_status import apply_message_status_update
-    from apps.inbox.realtime import broadcast_inbox_event
+    from apps.inbox.realtime import broadcast_outbound_queued
 
     apply_message_status_update(message, Message.Status.PENDING, broadcast=False)
-    org_id = str(organization.id)
-    message_data = MessageSerializer(message).data
-    broadcast_inbox_event(org_id, {"type": "message_sent", "message": message_data})
-    broadcast_inbox_event(org_id, {"type": "message_created", "message": message_data})
+    broadcast_outbound_queued(str(organization.id), message, conversation)
     send_whatsapp_message.delay(str(message.id))
     return message
 

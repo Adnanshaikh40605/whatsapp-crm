@@ -10,6 +10,7 @@ from apps.core.exceptions import APIResponse
 from apps.core.permissions import IsOrganizationMember
 from apps.crm.models import Contact
 from apps.inbox.models import CannedReply, Conversation, Message
+from apps.inbox.realtime import broadcast_conversation_updated, broadcast_outbound_queued
 from apps.inbox.serializers import (
     CannedReplySerializer,
     ConversationSerializer,
@@ -74,6 +75,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         conversation = self.get_object()
         conversation.unread_count = 0
         conversation.save(update_fields=["unread_count", "updated_at"])
+        broadcast_conversation_updated(str(request.organization.id), conversation)
         return APIResponse.success(ConversationSerializer(conversation).data)
 
     @action(detail=True, methods=["get"], url_path="message-analytics")
@@ -145,14 +147,9 @@ class MessageViewSet(viewsets.ModelViewSet):
 
         if not message.is_internal_note:
             from apps.inbox.message_status import apply_message_status_update
-            from apps.inbox.realtime import broadcast_inbox_event
 
             apply_message_status_update(message, Message.Status.PENDING, broadcast=False)
-            message_data = MessageSerializer(message).data
-            conversation_data = ConversationSerializer(conversation).data
-            org_id = str(self.request.organization.id)
-            broadcast_inbox_event(org_id, {"type": "message_created", "message": message_data})
-            broadcast_inbox_event(org_id, {"type": "conversation_updated", "conversation": conversation_data})
+            broadcast_outbound_queued(str(self.request.organization.id), message, conversation)
             send_whatsapp_message.delay(str(message.id))
 
     @action(detail=False, methods=["post"], url_path="send-sms")

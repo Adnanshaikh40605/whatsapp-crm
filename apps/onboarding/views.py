@@ -217,11 +217,17 @@ class WhatsAppWebhookView(APIView):
 
         from apps.inbox.services import WebhookProcessor
 
+        # Process synchronously so save + WebSocket broadcast happen immediately.
+        # Heavy side effects (automation workflows) are still queued inside WebhookProcessor.
         try:
-            process_inbound_webhook.delay(request.data)
-            webhook_logger.info("WhatsApp webhook queued for processing")
-        except Exception as exc:
-            webhook_logger.warning("Webhook task failed, processing inline: %s", exc)
             result = WebhookProcessor(request.data).process()
-            webhook_logger.info("WhatsApp webhook processed inline: %s", result)
+            webhook_logger.info("WhatsApp webhook processed: %s", result)
+        except Exception as exc:
+            webhook_logger.exception("WhatsApp webhook sync processing failed: %s", exc)
+            try:
+                process_inbound_webhook.delay(request.data)
+                webhook_logger.info("WhatsApp webhook queued for Celery retry")
+            except Exception as queue_exc:
+                webhook_logger.error("WhatsApp webhook Celery fallback failed: %s", queue_exc)
+                return APIResponse.error("Webhook processing failed", status_code=500)
         return APIResponse.success({"status": "received"})

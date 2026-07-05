@@ -35,6 +35,16 @@ class InboxConsumer(AsyncJsonWebsocketConsumer):
         event_type = content.get("type")
         if event_type == "ping":
             await self.send_json({"type": "pong"})
+        elif event_type == "typing":
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {"type": "inbox_event", "data": {"type": "typing", **content}},
+            )
+        elif event_type == "presence":
+            await self.channel_layer.group_send(
+                self.room_group_name,
+                {"type": "inbox_event", "data": {"type": "presence", **content}},
+            )
 
     async def inbox_event(self, event):
         await self.send_json(event["data"])

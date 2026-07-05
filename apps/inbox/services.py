@@ -20,20 +20,18 @@ def _normalize_inbound_phone(value: str) -> str:
 
 
 def _broadcast_inbox_message(org, message: Message) -> None:
-    from apps.inbox.realtime import broadcast_inbox_event
-    from apps.inbox.serializers import ConversationSerializer, MessageSerializer
+    from apps.inbox.realtime import broadcast_inbound_message, broadcast_outbound_queued
 
-    message_data = MessageSerializer(message).data
-    conversation_data = ConversationSerializer(message.conversation).data
     org_id = str(org.id)
-
-        broadcast_inbox_event(org_id, {"type": "new_message", "message": message_data})
-        broadcast_inbox_event(org_id, {"type": "message_created", "message": message_data})
-    broadcast_inbox_event(org_id, {"type": "conversation_updated", "conversation": conversation_data})
+    if message.direction == Message.Direction.INBOUND:
+        broadcast_inbound_message(org_id, message)
+    else:
+        broadcast_outbound_queued(org_id, message, message.conversation)
     webhook_logger.info(
-        "WebSocket broadcast: message_created conversation_id=%s message_id=%s",
+        "WebSocket broadcast: conversation_id=%s message_id=%s direction=%s",
         message.conversation_id,
         message.id,
+        message.direction,
     )
 
 

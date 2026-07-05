@@ -41,13 +41,39 @@ def send_whatsapp_message(self, message_id):
     message.status = Message.Status.SENT if not result.get("error") else Message.Status.FAILED
     message.whatsapp_message_id = wa_id
     message.provider_message_id = wa_id
+    if message.status == Message.Status.SENT and not message.sent_at:
+        message.sent_at = timezone.now()
+    elif message.status == Message.Status.FAILED:
+        message.failed_at = timezone.now()
+        if result.get("error"):
+            message.error_reason = str(result["error"])
     message.metadata = {
-        **message.metadata,
+        **(message.metadata or {}),
         "sent_at": timezone.now().isoformat(),
         "channel": Message.Channel.WHATSAPP,
         "api_response": result,
     }
-    message.save(update_fields=["status", "whatsapp_message_id", "provider_message_id", "metadata", "updated_at"])
+    message.save(
+        update_fields=[
+            "status",
+            "whatsapp_message_id",
+            "provider_message_id",
+            "sent_at",
+            "failed_at",
+            "error_reason",
+            "metadata",
+            "updated_at",
+        ]
+    )
+
+    conversation = message.conversation
+    if message.status == Message.Status.SENT:
+        conversation.last_outbound_status = Message.Status.SENT
+        conversation.save(update_fields=["last_outbound_status", "updated_at"])
+
+    from apps.inbox.realtime import broadcast_message_status
+
+    broadcast_message_status(message, include_embed_alias=False)
     return {"status": message.status, "message_id": str(message_id)}
 
 
