@@ -122,6 +122,30 @@ class WhatsAppConnectService:
             logger.warning("Meta webhook subscription request failed: %s", exc)
             return {"ok": False, "error": str(exc)}
 
+    @staticmethod
+    def subscribe_waba_to_app(organization) -> dict:
+        """Link WABA to this Meta app so message webhooks are delivered."""
+        waba_id = organization.whatsapp_business_account_id
+        token = organization.whatsapp_access_token
+        if not waba_id or not token:
+            return {"ok": False, "error": "missing_waba_or_token"}
+
+        try:
+            resp = requests.post(
+                f"{WhatsAppConnectService.GRAPH_API}/{waba_id}/subscribed_apps",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=20,
+            )
+            payload = resp.json()
+            if resp.ok:
+                logger.info("WABA subscribed to app: org=%s %s", organization.name, payload)
+                return {"ok": True, "response": payload}
+            logger.warning("WABA subscribe failed: org=%s %s", organization.name, payload)
+            return {"ok": False, "error": payload}
+        except requests.RequestException as exc:
+            logger.warning("WABA subscribe request failed: %s", exc)
+            return {"ok": False, "error": str(exc)}
+
     def get_embedded_signup_config(self):
         """Return config needed for Meta Embedded Signup frontend SDK."""
         return {
