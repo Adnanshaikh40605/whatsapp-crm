@@ -3,6 +3,8 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
 
+from apps.onboarding.views import WhatsAppWebhookView
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/", include("apps.embed_api.urls")),
@@ -14,6 +16,8 @@ urlpatterns = [
     path("api/v1/campaigns/", include("apps.campaigns.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
     path("api/v1/onboarding/", include("apps.onboarding.urls")),
+    # Alias — Meta / docs sometimes use the shorter path without /onboarding/
+    path("api/v1/webhooks/whatsapp/", WhatsAppWebhookView.as_view(), name="whatsapp-webhook-alias"),
     path("api/v1/quotes/", include("apps.quotes.urls")),
     path("api/v1/invoices/", include("apps.invoices.urls")),
     path("api/v1/analytics/", include("apps.analytics.urls")),

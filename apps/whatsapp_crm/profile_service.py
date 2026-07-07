@@ -10,6 +10,22 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_response_json(response) -> dict:
+    try:
+        return response.json()
+    except ValueError:
+        return {"error": {"message": response.text[:500] or "Invalid response from Meta API"}}
+
+
+def _format_meta_error(error) -> str:
+    if isinstance(error, dict):
+        nested = error.get("error")
+        if isinstance(nested, dict):
+            return str(nested.get("message") or nested.get("error_user_msg") or nested)
+        return str(error.get("message") or error)
+    return str(error)
+
 META_VERTICALS = [
     ("TRAVEL", "Travel"),
     ("HOTEL", "Hotel"),
@@ -78,7 +94,7 @@ class MetaBusinessProfileService:
             },
             timeout=30,
         )
-        data = response.json()
+        data = _safe_response_json(response)
         if not response.ok:
             return {"error": data}
         return data
@@ -95,7 +111,7 @@ class MetaBusinessProfileService:
             },
             timeout=30,
         )
-        data = response.json()
+        data = _safe_response_json(response)
         if not response.ok:
             return {"error": data}
         profile = (data.get("data") or [{}])[0] if isinstance(data.get("data"), list) else data
@@ -165,7 +181,7 @@ class MetaBusinessProfileService:
 
         url = f"{self.GRAPH_API}/{self._phone_id()}/whatsapp_business_profile"
         response = requests.post(url, headers=self._headers(), json=body, timeout=60)
-        data = response.json()
+        data = _safe_response_json(response)
         if not response.ok:
             logger.warning("Meta business profile update failed: %s", data)
             return {"error": data}
@@ -210,13 +226,27 @@ class MetaBusinessProfileService:
 
     def get_health(self) -> dict:
         phone = self.get_phone_number_info()
-        webhook_url = (self.org.settings or {}).get("whatsapp_webhook", {}).get("webhook_url", "")
-        synced_at = (self.org.settings or {}).get("whatsapp_profile", {}).get("synced_at")
+        settings_data = self.org.settings or {}
+        webhook_url = (
+            settings_data.get("whatsapp_webhook", {}).get("webhook_url")
+            or settings_data.get("webhook_url")
+            or getattr(settings, "WHATSAPP_WEBHOOK_URL", "")
+        )
+        subscription = settings_data.get("webhook_subscription", {})
+        if subscription.get("ok") is True:
+            webhook_status = "connected"
+        elif webhook_url:
+            webhook_status = "failed" if subscription.get("ok") is False else "configured"
+        else:
+            webhook_status = "not_configured"
+
+        synced_at = settings_data.get("whatsapp_profile", {}).get("synced_at")
         return {
             "api_status": "connected" if self.is_configured else "not_connected",
-            "webhook_status": "connected" if webhook_url else "not_configured",
+            "webhook_status": webhook_status,
             "quality_rating": phone.get("quality_rating", "") if not phone.get("error") else "",
-            "phone_status": phone.get("code_verification_status", "") if not phone.get("error") else "",
+            "phone_status": phone.get("status", "") if not phone.get("error") else "",
+            "code_verification_status": phone.get("code_verification_status", "") if not phone.get("error") else "",
             "last_sync": synced_at,
         }
 

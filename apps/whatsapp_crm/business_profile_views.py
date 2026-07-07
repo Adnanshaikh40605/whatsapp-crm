@@ -1,3 +1,4 @@
+import logging
 import os
 
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -11,8 +12,12 @@ from apps.whatsapp_crm.profile_service import (
     LABEL_TO_VERTICAL,
     META_VERTICALS,
     MetaBusinessProfileService,
+    _format_meta_error,
 )
 from apps.whatsapp_crm.views import WhatsAppCRMBaseView
+
+
+logger = logging.getLogger(__name__)
 
 
 class WhatsAppBusinessProfileView(WhatsAppCRMBaseView):
@@ -60,87 +65,94 @@ class WhatsAppBusinessProfileView(WhatsAppCRMBaseView):
         )
 
     def patch(self, request):
-        service = MetaBusinessProfileService(request.organization)
-        if not service.is_configured:
-            return APIResponse.error("WhatsApp is not connected.", status_code=400)
-
-        data = request.data.copy()
-        if "category" in data and "vertical" not in data:
-            label = str(data.get("category", "")).strip().lower()
-            data["vertical"] = LABEL_TO_VERTICAL.get(label, data.get("vertical"))
-
-        websites = data.get("websites")
-        if isinstance(websites, str):
-            import json
-            try:
-                websites = json.loads(websites)
-            except json.JSONDecodeError:
-                websites = [websites]
-        if websites is not None:
-            data["websites"] = websites
-
-        errors = service.validate_payload(data)
-        if errors:
-            return APIResponse.error(errors[0], status_code=400)
-
-        logo_path = None
-        upload = request.FILES.get("logo")
-        remove_logo = str(data.get("remove_logo", "")).lower() in {"1", "true", "yes"}
         try:
-            if upload:
-                logo_path = service.save_uploaded_logo(upload)
-            elif remove_logo:
-                pass
-        except ValueError as exc:
-            return APIResponse.error(str(exc), status_code=400)
+            service = MetaBusinessProfileService(request.organization)
+            if not service.is_configured:
+                return APIResponse.error("WhatsApp is not connected.", status_code=400)
 
-        update_payload = {
-            "description": data.get("description"),
-            "address": data.get("address"),
-            "email": data.get("email"),
-            "websites": data.get("websites"),
-            "vertical": data.get("vertical"),
-        }
-        result = service.update_profile(update_payload, logo_path=logo_path)
-        if logo_path:
+            data = request.data.copy()
+            if "category" in data and "vertical" not in data:
+                label = str(data.get("category", "")).strip().lower()
+                data["vertical"] = LABEL_TO_VERTICAL.get(label, data.get("vertical"))
+
+            websites = data.get("websites")
+            if isinstance(websites, str):
+                import json
+                try:
+                    websites = json.loads(websites)
+                except json.JSONDecodeError:
+                    websites = [websites]
+            if websites is not None:
+                data["websites"] = websites
+
+            errors = service.validate_payload(data)
+            if errors:
+                return APIResponse.error(errors[0], status_code=400)
+
+            logo_path = None
+            upload = request.FILES.get("logo")
+            remove_logo = str(data.get("remove_logo", "")).lower() in {"1", "true", "yes"}
             try:
-                os.unlink(logo_path)
-            except OSError:
-                pass
+                if upload:
+                    logo_path = service.save_uploaded_logo(upload)
+                elif remove_logo:
+                    pass
+            except ValueError as exc:
+                return APIResponse.error(str(exc), status_code=400)
 
-        if result.get("error"):
-            return APIResponse.error(str(result["error"]), status_code=400)
+            update_payload = {
+                "description": data.get("description"),
+                "address": data.get("address"),
+                "email": data.get("email"),
+                "websites": data.get("websites"),
+                "vertical": data.get("vertical"),
+            }
+            result = service.update_profile(update_payload, logo_path=logo_path)
+            if logo_path:
+                try:
+                    os.unlink(logo_path)
+                except OSError:
+                    pass
 
-        business_hours = data.get("business_hours")
-        if isinstance(business_hours, str):
-            import json
-            try:
-                business_hours = json.loads(business_hours)
-            except json.JSONDecodeError:
-                business_hours = None
-        if business_hours is not None:
-            settings_data = dict(request.organization.settings or {})
-            wp = dict(settings_data.get("whatsapp_profile", {}))
-            wp["business_hours"] = business_hours
-            settings_data["whatsapp_profile"] = wp
-            request.organization.settings = settings_data
-            request.organization.save(update_fields=["settings", "updated_at"])
+            if result.get("error"):
+                return APIResponse.error(_format_meta_error(result["error"]), status_code=400)
 
-        profile = service.sync_and_cache()
-        service.append_audit(
-            request.user,
-            "Profile updated",
-            {k: v for k, v in update_payload.items() if v is not None},
-        )
+            business_hours = data.get("business_hours")
+            if isinstance(business_hours, str):
+                import json
+                try:
+                    business_hours = json.loads(business_hours)
+                except json.JSONDecodeError:
+                    business_hours = None
+            if business_hours is not None:
+                settings_data = dict(request.organization.settings or {})
+                wp = dict(settings_data.get("whatsapp_profile", {}))
+                wp["business_hours"] = business_hours
+                settings_data["whatsapp_profile"] = wp
+                request.organization.settings = settings_data
+                request.organization.save(update_fields=["settings", "updated_at"])
 
-        return APIResponse.success(
-            {
-                "profile": profile,
-                "health": service.get_health(),
-                "audit_log": service.get_audit_log(),
-            },
-            message="Profile updated successfully",
-        )
+            profile = service.sync_and_cache()
+            if profile.get("error"):
+                return APIResponse.error(_format_meta_error(profile["error"]), status_code=400)
+
+            service.append_audit(
+                request.user,
+                "Profile updated",
+                {k: v for k, v in update_payload.items() if v is not None},
+            )
+
+            return APIResponse.success(
+                {
+                    "profile": profile,
+                    "health": service.get_health(),
+                    "audit_log": service.get_audit_log(),
+                },
+                message="Profile updated successfully",
+            )
+        except Exception as exc:
+            logger.exception("Business profile PATCH failed for org=%s", getattr(request.organization, "id", None))
+            return APIResponse.error(f"Profile update failed: {exc}", status_code=500)
 
 
 class WhatsAppBusinessProfileSyncView(WhatsAppCRMBaseView):

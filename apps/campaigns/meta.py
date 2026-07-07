@@ -11,6 +11,13 @@ from apps.campaigns.models import MediaAsset, WhatsAppTemplate
 logger = logging.getLogger(__name__)
 
 
+def _safe_response_json(response) -> dict:
+    try:
+        return response.json()
+    except ValueError:
+        return {"error": {"message": response.text[:500] or "Invalid response from Meta API"}}
+
+
 class MetaTemplateService:
     GRAPH_API = "https://graph.facebook.com/v21.0"
 
@@ -94,7 +101,7 @@ class MetaTemplateService:
             params={"file_length": file_size, "file_type": file_type},
             timeout=30,
         )
-        session_data = session_resp.json()
+        session_data = _safe_response_json(session_resp)
         if not session_resp.ok:
             return {"error": session_data}
 
@@ -109,7 +116,7 @@ class MetaTemplateService:
                 data=handle.read(),
                 timeout=120,
             )
-        upload_data = upload_resp.json()
+        upload_data = _safe_response_json(upload_resp)
         if not upload_resp.ok:
             return {"error": upload_data}
 
