@@ -53,8 +53,23 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         template = serializer.save(organization=self.request.organization)
         submit = self.request.data.get("submit_to_meta")
-        if str(submit).lower() in {"1", "true", "yes"}:
-            MetaTemplateService(self.request.organization).create_template(template)
+        if str(submit).lower() not in {"1", "true", "yes"}:
+            return
+
+        result = MetaTemplateService(self.request.organization).create_template(template)
+        if result.get("error"):
+            # Keep the draft saved, but surface Meta's rejection so it does not silently
+            # look like a failed/disabled template with no Meta ID.
+            raw = result["error"]
+            if isinstance(raw, dict):
+                message = (
+                    (raw.get("error") or {}).get("message")
+                    or raw.get("message")
+                    or str(raw)
+                )
+            else:
+                message = str(raw)
+            raise ValidationError({"submit_to_meta": [message]})
 
     @action(detail=False, methods=["post"])
     def sync_meta(self, request):

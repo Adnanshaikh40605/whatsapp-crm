@@ -334,7 +334,14 @@ class MetaTemplateService:
                 buttons = component.get("buttons", [])
 
         status = (item.get("status") or "").lower()
-        local_status = status if status in WhatsAppTemplate.Status.values else WhatsAppTemplate.Status.PENDING
+        # Meta returns DISABLED / PAUSED / DELETED — keep local status as rejected only for
+        # REJECTED; leave other non-standard Meta statuses as pending so UI can use meta_status.
+        if status in WhatsAppTemplate.Status.values:
+            local_status = status
+        elif status in {"disabled", "paused", "deleted"}:
+            local_status = WhatsAppTemplate.Status.REJECTED
+        else:
+            local_status = WhatsAppTemplate.Status.PENDING
         return {
             "category": (item.get("category") or WhatsAppTemplate.Category.UTILITY).lower(),
             "status": local_status,
