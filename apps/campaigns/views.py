@@ -128,7 +128,16 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
         wa = WhatsAppService(request.organization)
         body_params = request.data.get("body_params")
         if body_params is None:
-            body_params = list(template.examples.values()) if isinstance(template.examples, dict) else []
+            examples = template.examples if isinstance(template.examples, dict) else {}
+            body_text = examples.get("body_text")
+            if isinstance(body_text, list) and body_text and isinstance(body_text[0], list):
+                body_params = [str(v) for v in body_text[0]]
+            elif isinstance(body_text, list):
+                body_params = [str(v) for v in body_text if not isinstance(v, (list, dict))]
+            elif template.variables:
+                body_params = [str(v) for v in template.variables]
+            else:
+                body_params = []
         components = build_template_send_components(template, body_params, wa=wa)
         result = wa.send_template(phone, template.name, template.language, components)
         if result.get("error"):

@@ -50,6 +50,27 @@ class WhatsAppTemplateSerializer(serializers.ModelSerializer):
     def get_display_name(self, obj):
         return f"{obj.name} ({obj.language})"
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        organization = getattr(request, "organization", None) if request else None
+        if not organization:
+            return attrs
+
+        name = attrs.get("name", getattr(self.instance, "name", ""))
+        language = attrs.get("language", getattr(self.instance, "language", "en"))
+        qs = WhatsAppTemplate.objects.filter(
+            organization=organization,
+            name=name,
+            language=language,
+        )
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError({
+                "name": ["This template name already exists for the selected language."],
+            })
+        return attrs
+
 
 class CampaignSerializer(serializers.ModelSerializer):
     template_name = serializers.CharField(source="template.name", read_only=True)

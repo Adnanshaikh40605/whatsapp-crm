@@ -1,9 +1,20 @@
+from django.db import IntegrityError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
 
 
 def custom_exception_handler(exc, context):
+    if isinstance(exc, IntegrityError):
+        message = "A record with these values already exists."
+        detail = str(exc)
+        if "name" in detail and "language" in detail:
+            message = "This template name already exists for the selected language."
+        return Response(
+            {"success": False, "error": {"name": [message]}},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     response = exception_handler(exc, context)
     if response is not None:
         response.data = {
