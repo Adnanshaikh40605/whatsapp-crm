@@ -98,9 +98,15 @@ class BotFlowViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def save_flow(self, request, pk=None):
         flow = self.get_object()
-        flow.flow_data = request.data.get("flow_data", {})
-        flow.save(update_fields=["flow_data", "updated_at"])
-        return APIResponse.success(BotFlowSerializer(flow).data, message="Flow saved")
+        serializer = BotFlowSerializer(
+            flow,
+            data={"flow_data": request.data.get("flow_data", {})},
+            partial=True,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return APIResponse.success(serializer.data, message="Flow saved")
 
 
 class BotReplyViewSet(viewsets.ModelViewSet):

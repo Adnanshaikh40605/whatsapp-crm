@@ -98,7 +98,11 @@ class MetaTemplateService:
         session_resp = requests.post(
             session_url,
             headers=self._headers(),
-            params={"file_length": file_size, "file_type": file_type},
+            params={
+                "file_length": file_size,
+                "file_type": file_type,
+                "file_name": os.path.basename(file_path),
+            },
             timeout=30,
         )
         session_data = _safe_response_json(session_resp)
@@ -112,7 +116,11 @@ class MetaTemplateService:
         with open(file_path, "rb") as handle:
             upload_resp = requests.post(
                 f"{self.GRAPH_API}/{upload_session_id}",
-                headers={**self._headers(), "file_offset": "0"},
+                headers={
+                    **self._headers(),
+                    "file_offset": "0",
+                    "Content-Type": "application/octet-stream",
+                },
                 data=handle.read(),
                 timeout=120,
             )
