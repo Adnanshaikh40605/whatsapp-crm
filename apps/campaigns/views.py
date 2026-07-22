@@ -8,7 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from apps.core.exceptions import APIResponse
 from apps.core.permissions import IsOrganizationMember
-from apps.campaigns.meta import MetaTemplateService
+from apps.campaigns.meta import MetaTemplateService, format_meta_template_error
 from apps.campaigns.models import Campaign, CampaignRecipient, MediaAsset, WhatsAppTemplate
 from apps.campaigns.campaign_analytics import (
     export_report,
@@ -60,15 +60,9 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
         if result.get("error"):
             # Keep the draft saved, but surface Meta's rejection so it does not silently
             # look like a failed/disabled template with no Meta ID.
-            raw = result["error"]
-            if isinstance(raw, dict):
-                message = (
-                    (raw.get("error") or {}).get("message")
-                    or raw.get("message")
-                    or str(raw)
-                )
-            else:
-                message = str(raw)
+            message = format_meta_template_error(result["error"])
+            template.rejected_reason = message
+            template.save(update_fields=["rejected_reason", "updated_at"])
             raise ValidationError({"submit_to_meta": [message]})
 
     @action(detail=False, methods=["post"])
@@ -77,9 +71,14 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
         result = MetaTemplateService(request.organization).sync_templates()
         if result.get("error"):
             return APIResponse.error(result["error"], status_code=400)
+        synced = result.get("synced_count", 0)
+        removed = result.get("removed_count", 0)
+        message = f"Synced {synced} templates from Meta"
+        if removed:
+            message += f" · removed {removed} deleted on Meta"
         return APIResponse.success(
-            {"synced_count": result["synced_count"]},
-            message=f"Synced {result['synced_count']} templates from Meta",
+            {"synced_count": synced, "removed_count": removed},
+            message=message,
         )
 
     @action(detail=True, methods=["post"])
@@ -87,7 +86,12 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
         template = self.get_object()
         result = MetaTemplateService(request.organization).create_template(template)
         if result.get("error"):
-            return APIResponse.error(result["error"], status_code=400)
+            message = format_meta_template_error(result["error"])
+            template.rejected_reason = message
+            template.save(update_fields=["rejected_reason", "updated_at"])
+            return APIResponse.error(message, status_code=400)
+        template.rejected_reason = ""
+        template.save(update_fields=["rejected_reason", "updated_at"])
         return APIResponse.success(WhatsAppTemplateSerializer(template).data, message="Template submitted to Meta")
 
     @action(detail=True, methods=["post"])

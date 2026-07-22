@@ -18,6 +18,32 @@ def _safe_response_json(response) -> dict:
         return {"error": {"message": response.text[:500] or "Invalid response from Meta API"}}
 
 
+def format_meta_template_error(error) -> str:
+    """Turn Meta Graph API error payloads into a clear user-facing string."""
+    if isinstance(error, dict):
+        nested = error.get("error") if isinstance(error.get("error"), dict) else error
+        if isinstance(nested, dict):
+            user_msg = nested.get("error_user_msg") or nested.get("error_user_title")
+            message = nested.get("message")
+            parts = []
+            if user_msg:
+                parts.append(str(user_msg))
+            elif message:
+                parts.append(str(message))
+            error_data = nested.get("error_data")
+            if isinstance(error_data, dict):
+                details = error_data.get("details") or error_data.get("blame_field_specs")
+                if details:
+                    parts.append(str(details))
+            elif error_data:
+                parts.append(str(error_data))
+            if parts:
+                return " — ".join(parts)
+            return str(nested)
+        return str(error.get("message") or error)
+    return str(error)
+
+
 class MetaTemplateService:
     GRAPH_API = "https://graph.facebook.com/v21.0"
 
@@ -49,32 +75,67 @@ class MetaTemplateService:
         if not self.is_configured:
             return {"error": "WhatsApp Business Account is not connected."}
 
+        items: list[dict] = []
         url = f"{self.GRAPH_API}/{self.org.whatsapp_business_account_id}/message_templates"
-        response = requests.get(
-            url,
-            headers=self._headers(),
-            params={
-                "fields": "id,name,status,language,category,components,quality_score,rejected_reason",
-                "limit": 100,
-            },
-            timeout=30,
-        )
-        data = response.json()
-        if not response.ok:
-            logger.warning("Meta template sync failed: %s", data)
-            return {"error": data}
+        params = {
+            "fields": "id,name,status,language,category,components,quality_score,rejected_reason",
+            "limit": 100,
+        }
+
+        # Page through Meta results so sync is complete, not just the first 100.
+        while url:
+            response = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            data = response.json()
+            if not response.ok:
+                logger.warning("Meta template sync failed: %s", data)
+                return {"error": data}
+            items.extend(data.get("data") or [])
+            next_url = (data.get("paging") or {}).get("next")
+            url = next_url
+            params = None  # next URL already contains query params
 
         synced = 0
-        for item in data.get("data", []):
+        seen_keys: set[tuple[str, str]] = set()
+        seen_meta_ids: set[str] = set()
+
+        for item in items:
+            name = (item.get("name") or "").strip()
+            language = item.get("language") or "en_US"
+            if not name:
+                continue
+            seen_keys.add((name, language))
+            meta_id = str(item.get("id") or "").strip()
+            if meta_id:
+                seen_meta_ids.add(meta_id)
+
             defaults = self._defaults_from_meta(item)
             WhatsAppTemplate.objects.update_or_create(
                 organization=self.org,
-                name=item.get("name", ""),
-                language=item.get("language", "en_US"),
+                name=name,
+                language=language,
                 defaults=defaults,
             )
             synced += 1
-        return {"synced_count": synced, "raw": data}
+
+        # Remove CRM copies that Meta no longer returns.
+        # Keep pure local drafts (no Meta ID) so unfinished work is not wiped.
+        removed = 0
+        local_qs = WhatsAppTemplate.objects.filter(organization=self.org).exclude(
+            whatsapp_template_id=""
+        )
+        for template in local_qs:
+            key = (template.name, template.language)
+            meta_id = str(template.whatsapp_template_id or "").strip()
+            still_on_meta = (meta_id and meta_id in seen_meta_ids) or key in seen_keys
+            if not still_on_meta:
+                template.delete()
+                removed += 1
+
+        return {
+            "synced_count": synced,
+            "removed_count": removed,
+            "raw": {"count": len(items)},
+        }
 
     def refresh_template(self, template: WhatsAppTemplate) -> dict:
         result = self.sync_templates()
