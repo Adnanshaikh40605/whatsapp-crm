@@ -411,13 +411,18 @@ class MetaTemplateService:
             local_status = WhatsAppTemplate.Status.REJECTED
         else:
             local_status = WhatsAppTemplate.Status.PENDING
+        # Meta returns rejected_reason "NONE" for approved templates — treat as empty.
+        raw_reason = item.get("rejected_reason") or ""
+        if isinstance(raw_reason, str) and raw_reason.strip().upper() in {"", "NONE", "NULL", "N/A"}:
+            raw_reason = ""
+
         return {
             "category": (item.get("category") or WhatsAppTemplate.Category.UTILITY).lower(),
             "status": local_status,
             "meta_status": item.get("status", ""),
             "whatsapp_template_id": item.get("id", ""),
             "quality_rating": (item.get("quality_score") or {}).get("score", ""),
-            "rejected_reason": item.get("rejected_reason", ""),
+            "rejected_reason": raw_reason,
             "components": components,
             "header": header,
             "body": body,
