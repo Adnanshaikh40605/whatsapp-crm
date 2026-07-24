@@ -7,6 +7,7 @@ DEFAULT_CORS_ORIGINS = (
     "http://127.0.0.1:3000",
     "http://127.0.0.1:5173",
     "https://pestcontrol-crm-frontend.vercel.app",
+    "https://dohadminpanel.vercel.app",
     "https://www.driveronhire.ai",
     "https://driveronhire.ai",
 )
