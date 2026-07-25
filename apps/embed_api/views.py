@@ -273,7 +273,7 @@ class SendTemplateView(EmbedAPIView):
             if not url_button_is_dynamic(template, btn_index):
                 return APIResponse.error(
                     "Template E-Brochure URL is static. Create/approve a template whose URL ends with {{1}} "
-                    "(e.g. https://api.driveronhire.ai/r/{{1}}) — see pest_ecard_tracked.",
+                    "(e.g. https://api.driveronhire.ai/r/{{1}}) — see pest_ecard_utility.",
                     status_code=400,
                 )
             url_button_params[btn_index] = tracked.token

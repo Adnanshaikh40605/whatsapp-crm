@@ -7,15 +7,14 @@ from apps.campaigns.models import WhatsAppTemplate
 from apps.core.models import set_current_organization
 from apps.organizations.models import Organization
 
-TEMPLATE_NAME = "pest_ecard_tracked"
+TEMPLATE_NAME = "pest_ecard_utility"
 LANGUAGE = "en_US"
 HEADER_TEXT = "Dear, Customer"
 BODY = (
     "Thank you for your valuable time.\n\n"
     "As discussed during our call, please find the details of PestControl99.com, "
     "a Government Licensed Professional Pest Management Company.\n\n"
-    "You can explore our digital business card, e-brochure, services, and contact "
-    "details using the buttons below.\n\n"
+    "You can view your digital visiting card and service details using the buttons below.\n\n"
     "Thank you,"
 )
 FOOTER = "Pest Control 99"
@@ -72,6 +71,9 @@ class Command(BaseCommand):
             defaults={
                 "category": WhatsAppTemplate.Category.UTILITY,
                 "status": WhatsAppTemplate.Status.DRAFT,
+                "meta_status": "",
+                "whatsapp_template_id": "",
+                "rejected_reason": "",
                 "header": {"type": "HEADER", "format": "TEXT", "text": HEADER_TEXT},
                 "body": BODY,
                 "footer": FOOTER,
@@ -85,25 +87,28 @@ class Command(BaseCommand):
         self.stdout.write(
             self.style.SUCCESS(
                 f"{'Created' if created else 'Updated'} local template {TEMPLATE_NAME} "
-                f"url={dynamic_url}"
+                f"category=UTILITY url={dynamic_url}"
             )
         )
 
-        if options["submit_only"] or tpl.status != WhatsAppTemplate.Status.APPROVED:
-            meta = MetaTemplateService(org)
-            result = meta.create_template(tpl)
-            if result.get("error"):
-                self.stdout.write(self.style.ERROR(f"Meta submit error: {result['error']}"))
-            else:
-                self.stdout.write(
-                    self.style.SUCCESS(
-                        f"Submitted to Meta — id={result.get('id')} status={result.get('status', 'pending')}"
-                    )
+        meta = MetaTemplateService(org)
+        result = meta.create_template(tpl)
+        if result.get("error"):
+            self.stdout.write(self.style.ERROR(f"Meta submit error: {result['error']}"))
+        else:
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Submitted to Meta as UTILITY — id={result.get('id')} "
+                    f"status={result.get('status', 'pending')} "
+                    f"category={result.get('category', 'UTILITY')}"
                 )
-            meta.sync_templates()
-            tpl.refresh_from_db()
+            )
+        meta.sync_templates()
+        tpl.refresh_from_db()
 
-        self.stdout.write(f"Status: {tpl.status} meta={tpl.meta_status} id={tpl.whatsapp_template_id}")
         self.stdout.write(
-            "After APPROVED, Pest CRM send with track_ecard=true and template_name=pest_ecard_tracked"
+            f"Status: {tpl.status} meta={tpl.meta_status} category={tpl.category} id={tpl.whatsapp_template_id}"
+        )
+        self.stdout.write(
+            "After APPROVED, Pest CRM send with track_ecard=true and template_name=pest_ecard_utility"
         )
