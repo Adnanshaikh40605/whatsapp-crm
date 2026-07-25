@@ -223,3 +223,51 @@ class AdAttribution(TenantModel):
 
     class Meta:
         indexes = [models.Index(fields=["organization", "source", "created_at"])]
+
+
+class ECardTrackedLink(TenantModel):
+    """Per-send tracking token for E-Brochure / e-card URL buttons."""
+
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    phone = models.CharField(max_length=20, db_index=True)
+    customer_name = models.CharField(max_length=255, blank=True)
+    external_id = models.CharField(max_length=100, blank=True, db_index=True)
+    destination_url = models.URLField(max_length=1000)
+    template_name = models.CharField(max_length=255, blank=True)
+    click_count = models.PositiveIntegerField(default=0)
+    last_clicked_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ecard_tracked_links",
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "-created_at"]),
+            models.Index(fields=["organization", "phone"]),
+            models.Index(fields=["organization", "-last_clicked_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.phone} → {self.token}"
+
+
+class ECardClick(TenantModel):
+    """One row per click on a tracked e-card / brochure link."""
+
+    link = models.ForeignKey(ECardTrackedLink, on_delete=models.CASCADE, related_name="clicks")
+    phone = models.CharField(max_length=20, db_index=True)
+    customer_name = models.CharField(max_length=255, blank=True)
+    external_id = models.CharField(max_length=100, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    clicked_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["organization", "-clicked_at"]),
+            models.Index(fields=["organization", "phone"]),
+        ]

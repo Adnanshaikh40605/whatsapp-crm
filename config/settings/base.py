@@ -17,6 +17,9 @@ SECRET_KEY = env("SECRET_KEY", default="dev-insecure-change-me-in-production")
 EMBED_SSO_SECRET = env("EMBED_SSO_SECRET", default=SECRET_KEY)
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
+# Public origin for short links (e-card tracker /r/<token>/)
+PUBLIC_BASE_URL = env("PUBLIC_BASE_URL", default="https://api.driveronhire.ai")
+
 
 INSTALLED_APPS = [
     "daphne",

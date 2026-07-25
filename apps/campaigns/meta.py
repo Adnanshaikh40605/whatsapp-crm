@@ -436,8 +436,13 @@ def build_template_send_components(
     template: WhatsAppTemplate,
     body_params: list[str] | None = None,
     wa: "WhatsAppService | None" = None,
+    url_button_params: dict[int, str] | None = None,
 ) -> list[dict]:
-    """Build WhatsApp send API components for a template message."""
+    """Build WhatsApp send API components for a template message.
+
+    url_button_params: { button_index: suffix } for dynamic URL buttons
+    (Meta appends the suffix to the template's base URL).
+    """
     from apps.core.whatsapp_service import WhatsAppService
 
     components = []
@@ -488,5 +493,17 @@ def build_template_send_components(
             "index": "0",
             "parameters": [{"type": "text", "text": str(params[0])}],
         })
+
+    if url_button_params:
+        for index, suffix in sorted(url_button_params.items()):
+            text = str(suffix or "").strip()
+            if not text:
+                continue
+            components.append({
+                "type": "button",
+                "sub_type": "url",
+                "index": str(index),
+                "parameters": [{"type": "text", "text": text}],
+            })
 
     return components

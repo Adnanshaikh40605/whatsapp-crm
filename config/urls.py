@@ -3,10 +3,13 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
 
+from apps.campaigns.ecard_redirect import ECardRedirectView
 from apps.onboarding.views import WhatsAppWebhookView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Public e-card click tracker (short URL for Meta dynamic button)
+    path("r/<str:token>/", ECardRedirectView.as_view(), name="ecard-redirect"),
     path("api/", include("apps.embed_api.urls")),
     path("api/v1/auth/", include("apps.accounts.urls")),
     path("api/v1/organizations/", include("apps.organizations.urls")),

@@ -29,6 +29,15 @@ from apps.inbox.models import Conversation, Message
 from apps.inbox.realtime import serialize_ws_message
 from apps.embed_api.authentication import EmbedAuthentication
 from rest_framework.permissions import IsAuthenticated
+from apps.campaigns.ecard_tracking import (
+    DEFAULT_ECARD_DESTINATION,
+    create_tracked_link,
+    find_url_button_index,
+    serialize_click,
+    serialize_link,
+    url_button_is_dynamic,
+)
+from apps.campaigns.models import ECardClick, ECardTrackedLink
 
 User = get_user_model()
 
@@ -215,17 +224,67 @@ class SendTemplateView(EmbedAPIView):
         from apps.campaigns.meta import build_template_send_components
         from apps.core.whatsapp_service import WhatsAppService
 
+        language = data.get("language") or "en"
         template = WhatsAppTemplate.objects.filter(
             organization=org,
             name=data["template_name"],
-            language=data.get("language", "en"),
+            language=language,
             status=WhatsAppTemplate.Status.APPROVED,
         ).first()
+        # Fall back to en_US when caller sends "en"
+        if not template and language == "en":
+            template = WhatsAppTemplate.objects.filter(
+                organization=org,
+                name=data["template_name"],
+                language="en_US",
+                status=WhatsAppTemplate.Status.APPROVED,
+            ).first()
         if not template:
             return APIResponse.error("Approved template not found.", status_code=400)
 
+        url_button_params: dict[int, str] = {}
+        tracked = None
+        raw_button_params = data.get("button_url_params") or {}
+        for key, value in raw_button_params.items():
+            try:
+                url_button_params[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
+
+        if data.get("track_ecard"):
+            phone = data.get("phone") or getattr(conversation.contact, "phone", "")
+            if not phone:
+                return APIResponse.error("phone is required when track_ecard=true.", status_code=400)
+            tracked = create_tracked_link(
+                organization=org,
+                phone=phone,
+                destination_url=data.get("ecard_destination_url") or DEFAULT_ECARD_DESTINATION,
+                customer_name=data.get("customer_name") or "",
+                external_id=data.get("external_id") or "",
+                template_name=template.name,
+                created_by=request.user,
+            )
+            btn_index = find_url_button_index(template)
+            if btn_index is None:
+                return APIResponse.error(
+                    "Template has no URL button to track. Use a template with a dynamic E-Brochure URL.",
+                    status_code=400,
+                )
+            if not url_button_is_dynamic(template, btn_index):
+                return APIResponse.error(
+                    "Template E-Brochure URL is static. Create/approve a template whose URL ends with {{1}} "
+                    "(e.g. https://api.driveronhire.ai/r/{{1}}) — see pest_ecard_tracked.",
+                    status_code=400,
+                )
+            url_button_params[btn_index] = tracked.token
+
         wa = WhatsAppService(org)
-        components = build_template_send_components(template, data.get("body_params") or [], wa=wa)
+        components = build_template_send_components(
+            template,
+            data.get("body_params") or [],
+            wa=wa,
+            url_button_params=url_button_params or None,
+        )
         message = queue_outbound_message(
             organization=org,
             user=request.user,
@@ -236,11 +295,81 @@ class SendTemplateView(EmbedAPIView):
             template_language=template.language,
             template_components=components,
         )
+        payload = serialize_ws_message(message)
+        if tracked:
+            payload["ecard_tracking"] = serialize_link(tracked)
         return APIResponse.success(
-            serialize_ws_message(message),
+            payload,
             message="Template queued",
             status_code=201,
         )
+
+
+class ECardTrackingListView(EmbedAPIView):
+    """List e-card / brochure clicks for the Pest Control CRM tracking page."""
+
+    def get(self, request):
+        org = self.get_organization(request)
+        qs = (
+            ECardClick.objects.filter(organization=org)
+            .select_related("link")
+            .order_by("-clicked_at")
+        )
+        phone = (request.query_params.get("phone") or "").strip()
+        if phone:
+            qs = qs.filter(phone__icontains=normalize_phone(phone).replace("+", ""))
+        external_id = (request.query_params.get("external_id") or "").strip()
+        if external_id:
+            qs = qs.filter(external_id=external_id)
+
+        try:
+            limit = min(int(request.query_params.get("limit") or 100), 500)
+        except ValueError:
+            limit = 100
+
+        items = [serialize_click(c) for c in qs[:limit]]
+        return APIResponse.success({
+            "results": items,
+            "count": len(items),
+            "total_clicks": ECardClick.objects.filter(organization=org).count(),
+            "unique_phones": (
+                ECardClick.objects.filter(organization=org)
+                .values("phone")
+                .distinct()
+                .count()
+            ),
+        })
+
+
+class ECardTrackedLinkListView(EmbedAPIView):
+    """List tracked links, or POST to create a test tracking link without sending WhatsApp."""
+
+    def get(self, request):
+        org = self.get_organization(request)
+        qs = ECardTrackedLink.objects.filter(organization=org).order_by("-created_at")
+        try:
+            limit = min(int(request.query_params.get("limit") or 100), 500)
+        except ValueError:
+            limit = 100
+        items = [serialize_link(link) for link in qs[:limit]]
+        return APIResponse.success({"results": items, "count": len(items)})
+
+    def post(self, request):
+        """Create a tracking link for testing clicks (no WhatsApp send)."""
+        org = self.get_organization(request)
+        phone = (request.data.get("phone") or "").strip()
+        if not phone:
+            return APIResponse.error("phone is required.", status_code=400)
+        link = create_tracked_link(
+            organization=org,
+            phone=phone,
+            destination_url=request.data.get("ecard_destination_url") or DEFAULT_ECARD_DESTINATION,
+            customer_name=request.data.get("customer_name") or "",
+            external_id=request.data.get("external_id") or "",
+            template_name=request.data.get("template_name") or "test",
+            created_by=request.user,
+        )
+        return APIResponse.success(serialize_link(link), message="Tracking link created", status_code=201)
 
 
 class SendMediaView(EmbedAPIView):
