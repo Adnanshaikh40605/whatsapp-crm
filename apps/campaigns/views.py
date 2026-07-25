@@ -128,6 +128,8 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
 
         from apps.campaigns.meta import build_template_send_components
         from apps.core.whatsapp_service import WhatsAppService
+        from apps.embed_api.services import normalize_phone, queue_outbound_message, resolve_conversation
+        from apps.inbox.models import Message
 
         wa = WhatsAppService(request.organization)
         body_params = request.data.get("body_params")
@@ -143,10 +145,126 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
             else:
                 body_params = []
         components = build_template_send_components(template, body_params, wa=wa)
-        result = wa.send_template(phone, template.name, template.language, components)
-        if result.get("error"):
-            return APIResponse.error(str(result["error"]), status_code=400)
-        return APIResponse.success(result, message="Test template sent")
+        conversation = resolve_conversation(
+            request.organization,
+            {"phone": normalize_phone(phone)},
+        )
+        message = queue_outbound_message(
+            organization=request.organization,
+            user=request.user,
+            conversation=conversation,
+            content=f"Template: {template.name}",
+            message_type=Message.MessageType.TEMPLATE,
+            template_name=template.name,
+            template_language=template.language,
+            template_components=components,
+        )
+        return APIResponse.success(
+            {
+                "message_id": str(message.id),
+                "phone": conversation.contact.phone,
+                "status": message.status,
+                "template": template.name,
+            },
+            message="Test template queued — delivery status will update from Meta webhooks",
+        )
+
+    @action(detail=True, methods=["get"], url_path="send_report")
+    def send_report(self, request, pk=None):
+        """Per-template delivery report: who succeeded / failed (inbox + campaigns)."""
+        from apps.inbox.models import Message
+
+        template = self.get_object()
+        org = request.organization
+        status_filter = (request.query_params.get("status") or "all").strip().lower()
+
+        rows: list[dict] = []
+
+        msg_qs = (
+            Message.objects.filter(
+                organization=org,
+                direction=Message.Direction.OUTBOUND,
+                template_name=template.name,
+            )
+            .select_related("conversation__contact")
+            .order_by("-created_at")
+        )
+        for msg in msg_qs[:500]:
+            contact = msg.conversation.contact if msg.conversation_id else None
+            rows.append({
+                "source": "message",
+                "id": str(msg.id),
+                "phone": contact.phone if contact else "",
+                "customer_name": (contact.full_name if contact else "") or "",
+                "status": msg.status,
+                "error_reason": msg.error_reason or "",
+                "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
+                "delivered_at": msg.delivered_at.isoformat() if msg.delivered_at else None,
+                "read_at": msg.read_at.isoformat() if msg.read_at else None,
+                "failed_at": msg.failed_at.isoformat() if msg.failed_at else None,
+                "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                "campaign_name": "",
+            })
+
+        recipient_qs = (
+            CampaignRecipient.objects.filter(
+                organization=org,
+                campaign__template_id=template.id,
+            )
+            .select_related("contact", "campaign")
+            .order_by("-created_at")
+        )
+        for recipient in recipient_qs[:500]:
+            rows.append({
+                "source": "campaign",
+                "id": str(recipient.id),
+                "phone": recipient.contact.phone if recipient.contact_id else "",
+                "customer_name": (recipient.contact.full_name if recipient.contact_id else "") or "",
+                "status": recipient.status,
+                "error_reason": recipient.error_message or "",
+                "sent_at": recipient.sent_at.isoformat() if recipient.sent_at else None,
+                "delivered_at": recipient.delivered_at.isoformat() if recipient.delivered_at else None,
+                "read_at": recipient.read_at.isoformat() if recipient.read_at else None,
+                "failed_at": None,
+                "created_at": recipient.created_at.isoformat() if recipient.created_at else None,
+                "campaign_name": recipient.campaign.name if recipient.campaign_id else "",
+            })
+
+        # Newest first
+        rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+
+        def bucket(status: str) -> str:
+            s = (status or "").lower()
+            if s in {"delivered", "read"}:
+                return "success"
+            if s == "failed":
+                return "failed"
+            if s in {"sent", "sending", "pending"}:
+                return "pending"
+            return s or "unknown"
+
+        if status_filter == "success":
+            rows = [r for r in rows if bucket(r["status"]) == "success"]
+        elif status_filter == "failed":
+            rows = [r for r in rows if bucket(r["status"]) == "failed"]
+        elif status_filter == "pending":
+            rows = [r for r in rows if bucket(r["status"]) == "pending"]
+
+        summary = {"total": 0, "success": 0, "failed": 0, "pending": 0, "sent": 0}
+        for r in rows:
+            summary["total"] += 1
+            b = bucket(r["status"])
+            if b in summary:
+                summary[b] += 1
+            if (r["status"] or "").lower() == "sent":
+                summary["sent"] += 1
+
+        return APIResponse.success({
+            "template_name": template.name,
+            "language": template.language,
+            "summary": summary,
+            "results": rows[:300],
+        })
 
 
 class CampaignViewSet(viewsets.ModelViewSet):
