@@ -77,7 +77,16 @@ class SSOLoginView(APIView):
         org_id = data.get("organization_id")
         external_user = data.get("external_user") or {}
 
+        if not api_key_raw and not embed_token:
+            return APIResponse.error("api_key or embed_token is required.", status_code=400)
+
         api_key = validate_api_key(api_key_raw, request=request) if api_key_raw else None
+        if api_key_raw and not api_key:
+            return APIResponse.error(
+                "Invalid or inactive API key. Use the latest key from WhatsFlow Settings → API Keys "
+                "(regenerate replaces the old key).",
+                status_code=401,
+            )
         if not api_key and not embed_token:
             return APIResponse.error("api_key or embed_token is required.", status_code=400)
 
