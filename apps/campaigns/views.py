@@ -50,6 +50,31 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         return WhatsAppTemplate.objects.select_related("media_asset").all()
 
+    def destroy(self, request, *args, **kwargs):
+        """Delete on Meta first, then remove local row so Sync will not restore it."""
+        template = self.get_object()
+        name = template.name
+        meta_id = template.whatsapp_template_id
+        # Pure local drafts were never on Meta — skip Graph delete.
+        needs_meta = bool(meta_id) or template.status != WhatsAppTemplate.Status.DRAFT
+        if needs_meta:
+            result = MetaTemplateService(request.organization).delete_template(template)
+            if result.get("error"):
+                message = format_meta_template_error(result["error"])
+                return APIResponse.error(
+                    f"Could not delete on Meta: {message}. Fix Meta delete first, or Sync will restore it.",
+                    status_code=400,
+                )
+        template.delete()
+        return APIResponse.success(
+            {"name": name, "whatsapp_template_id": meta_id},
+            message=(
+                f'Template "{name}" deleted from Meta and CRM'
+                if needs_meta
+                else f'Template "{name}" deleted'
+            ),
+        )
+
     def perform_create(self, serializer):
         template = serializer.save(organization=self.request.organization)
         submit = self.request.data.get("submit_to_meta")

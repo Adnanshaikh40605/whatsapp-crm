@@ -71,6 +71,31 @@ class MetaTemplateService:
         self._apply_meta_response(template, data)
         return data
 
+    def delete_template(self, template: WhatsAppTemplate) -> dict:
+        """Delete template on Meta so Sync will not bring it back."""
+        if not self.is_configured:
+            return {"error": "WhatsApp Business Account is not connected."}
+        name = (template.name or "").strip()
+        if not name:
+            return {"error": "Template name is required to delete on Meta."}
+
+        url = f"{self.GRAPH_API}/{self.org.whatsapp_business_account_id}/message_templates"
+        params: dict[str, str] = {"name": name}
+        meta_id = str(template.whatsapp_template_id or "").strip()
+        if meta_id:
+            params["hsm_id"] = meta_id
+
+        response = requests.delete(url, headers=self._headers(), params=params, timeout=60)
+        data = _safe_response_json(response)
+        if not response.ok:
+            # If already gone on Meta, treat as success so local delete can proceed.
+            message = str((data.get("error") or {}).get("message") or data)
+            if "does not exist" in message.lower() or "not found" in message.lower():
+                return {"success": True, "already_deleted": True}
+            logger.warning("Meta template delete failed: %s", data)
+            return {"error": data}
+        return data if data else {"success": True}
+
     def sync_templates(self) -> dict:
         if not self.is_configured:
             return {"error": "WhatsApp Business Account is not connected."}
