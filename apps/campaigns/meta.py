@@ -310,7 +310,9 @@ class MetaTemplateService:
                 continue
 
             if ctype == "FOOTER":
-                normalized.append({"type": "FOOTER", "text": component.get("text") or template.footer})
+                footer_text = (component.get("text") or template.footer or "").strip()
+                if footer_text:
+                    normalized.append({"type": "FOOTER", "text": footer_text})
                 continue
 
             if ctype == "BUTTONS":
