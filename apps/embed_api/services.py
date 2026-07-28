@@ -21,18 +21,45 @@ def contact_display_name(contact: Contact) -> str:
     return contact.full_name
 
 
-def serialize_conversation_list_item(conversation: Conversation) -> dict:
+def serialize_conversation_list_item(conversation: Conversation, user=None) -> dict:
     contact = conversation.contact
+    preview = (conversation.last_message_preview or "").strip()
+    if not preview:
+        # Backfill empty stubs so CRM never shows "No messages yet" when history exists.
+        last = (
+            Message.objects.filter(conversation=conversation)
+            .order_by("-created_at")
+            .only("content", "message_type", "created_at")
+            .first()
+        )
+        if last:
+            preview = (last.content or "").strip() or f"[{last.message_type}]"
+            # Persist so future list calls stay cheap.
+            Conversation.objects.filter(pk=conversation.pk).update(
+                last_message_preview=preview[:255],
+                last_message_at=last.created_at or conversation.last_message_at,
+            )
+            conversation.last_message_preview = preview[:255]
+            if last.created_at:
+                conversation.last_message_at = last.created_at
+
+    assigned_to_me = False
+    if user is not None and getattr(user, "is_authenticated", False) and conversation.assigned_to_id:
+        assigned_to_me = conversation.assigned_to_id == getattr(user, "id", None)
+
     return {
         "id": str(conversation.id),
         "customer": contact_display_name(contact),
+        "customer_name": contact_display_name(contact),
         "phone": contact.phone,
         "unread_count": conversation.unread_count,
-        "last_message": conversation.last_message_preview or "",
+        "last_message": preview,
+        "last_message_preview": preview,
         "last_message_time": (
             conversation.last_message_at.isoformat() if conversation.last_message_at else None
         ),
         "status": conversation.status,
+        "assigned_to_me": assigned_to_me,
     }
 
 

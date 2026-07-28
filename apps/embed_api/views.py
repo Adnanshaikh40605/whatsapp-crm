@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from django.db.models import Q
+from django.db.models import F, Q
 from rest_framework.permissions import AllowAny
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -166,16 +166,71 @@ class ConversationListView(EmbedAPIView):
         org = self.get_organization(request)
         qs = (
             Conversation.objects.filter(organization=org)
-            .select_related("contact")
-            .order_by("-last_message_at", "-created_at")
+            .select_related("contact", "assigned_to")
+            # NULLS LAST so stub contacts (no messages) don't bury real chats.
+            .order_by(F("last_message_at").desc(nulls_last=True), "-updated_at", "-created_at")
         )
         search = request.query_params.get("search", "").strip()
         if search:
             qs = qs.filter(
-                Q(contact__phone__icontains=search) | Q(contact__first_name__icontains=search)
+                Q(contact__phone__icontains=search)
+                | Q(contact__first_name__icontains=search)
+                | Q(contact__last_name__icontains=search)
             )
+
+        filter_name = (request.query_params.get("filter") or "all").strip().lower()
+        if filter_name == "unread":
+            qs = qs.filter(unread_count__gt=0)
+        elif filter_name == "assigned":
+            user = request.user
+            if getattr(user, "is_authenticated", False):
+                qs = qs.filter(assigned_to=user)
+            else:
+                qs = qs.none()
+
+        try:
+            page = max(int(request.query_params.get("page") or 1), 1)
+        except ValueError:
+            page = 1
+        try:
+            page_size = min(max(int(request.query_params.get("page_size") or 50), 1), 200)
+        except ValueError:
+            page_size = 50
+
+        total = qs.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_rows = list(qs[start:end])
+        has_next = end < total
+
+        # Tab badges (computed before filter so CRM counts stay correct on every tab).
+        badge_qs = (
+            Conversation.objects.filter(organization=org)
+            .select_related("contact")
+        )
+        if search:
+            badge_qs = badge_qs.filter(
+                Q(contact__phone__icontains=search)
+                | Q(contact__first_name__icontains=search)
+                | Q(contact__last_name__icontains=search)
+            )
+        all_total = badge_qs.count()
+        unread_total = badge_qs.filter(unread_count__gt=0).count()
+        if getattr(request.user, "is_authenticated", False):
+            assigned_total = badge_qs.filter(assigned_to=request.user).count()
+        else:
+            assigned_total = 0
+
         return APIResponse.success({
-            "results": [serialize_conversation_list_item(c) for c in qs[:200]],
+            "results": [serialize_conversation_list_item(c, request.user) for c in page_rows],
+            "count": total,
+            "all_total": all_total,
+            "unread_total": unread_total,
+            "assigned_total": assigned_total,
+            "next": f"?page={page + 1}&page_size={page_size}&filter={filter_name}" if has_next else None,
+            "previous": f"?page={page - 1}&page_size={page_size}&filter={filter_name}" if page > 1 else None,
+            "page": page,
+            "page_size": page_size,
         })
 
 
@@ -189,7 +244,43 @@ class ConversationDetailView(EmbedAPIView):
             )
         except Conversation.DoesNotExist:
             return APIResponse.error("Conversation not found.", status_code=404)
+
+        # Opening a chat marks it read (same as native WhatsFlow inbox).
+        if conversation.unread_count:
+            conversation.unread_count = 0
+            conversation.save(update_fields=["unread_count", "updated_at"])
+            try:
+                from apps.inbox.realtime import broadcast_conversation_updated
+
+                broadcast_conversation_updated(str(org.id), conversation)
+            except Exception:
+                pass
+
         return APIResponse.success(serialize_conversation_detail(conversation))
+
+
+class ConversationMarkReadView(EmbedAPIView):
+    def post(self, request, conversation_id):
+        org = self.get_organization(request)
+        try:
+            conversation = Conversation.objects.select_related("contact").get(
+                id=conversation_id,
+                organization=org,
+            )
+        except Conversation.DoesNotExist:
+            return APIResponse.error("Conversation not found.", status_code=404)
+
+        if conversation.unread_count:
+            conversation.unread_count = 0
+            conversation.save(update_fields=["unread_count", "updated_at"])
+            try:
+                from apps.inbox.realtime import broadcast_conversation_updated
+
+                broadcast_conversation_updated(str(org.id), conversation)
+            except Exception:
+                pass
+
+        return APIResponse.success(serialize_conversation_list_item(conversation, request.user))
 
 
 class SendMessageView(EmbedAPIView):
