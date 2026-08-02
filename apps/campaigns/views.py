@@ -151,25 +151,30 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
         if not phone:
             return APIResponse.error("Phone number is required.", status_code=400)
 
-        from apps.campaigns.meta import build_template_send_components
+        from apps.campaigns.meta import (
+            body_placeholder_count,
+            build_template_send_components,
+            resolve_template_body_params,
+        )
         from apps.core.whatsapp_service import WhatsAppService
         from apps.embed_api.services import normalize_phone, queue_outbound_message, resolve_conversation
         from apps.inbox.models import Message
 
         wa = WhatsAppService(request.organization)
-        body_params = request.data.get("body_params")
-        if body_params is None:
-            examples = template.examples if isinstance(template.examples, dict) else {}
-            body_text = examples.get("body_text")
-            if isinstance(body_text, list) and body_text and isinstance(body_text[0], list):
-                body_params = [str(v) for v in body_text[0]]
-            elif isinstance(body_text, list):
-                body_params = [str(v) for v in body_text if not isinstance(v, (list, dict))]
-            elif template.variables:
-                body_params = [str(v) for v in template.variables]
-            else:
-                body_params = []
-        components = build_template_send_components(template, body_params, wa=wa)
+        raw_params = request.data.get("body_params")
+        if isinstance(raw_params, list):
+            body_params = [str(v) for v in raw_params]
+        else:
+            body_params = None
+        expected = body_placeholder_count(template.body)
+        resolved = resolve_template_body_params(template, body_params, fill_missing=True)
+        if expected and len(resolved) < expected:
+            return APIResponse.error(
+                f"This template needs {expected} body values ({{{{1}}}}…{{{{{expected}}}}}), "
+                f"but only {len(resolved)} were provided.",
+                status_code=400,
+            )
+        components = build_template_send_components(template, resolved, wa=wa)
         conversation = resolve_conversation(
             request.organization,
             {"phone": normalize_phone(phone)},
@@ -197,11 +202,34 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["get"], url_path="send_report")
     def send_report(self, request, pk=None):
         """Per-template delivery report: who succeeded / failed (inbox + campaigns)."""
+        from apps.campaigns.meta import format_meta_template_error
         from apps.inbox.models import Message
 
         template = self.get_object()
         org = request.organization
         status_filter = (request.query_params.get("status") or "all").strip().lower()
+
+        def humanize_error(raw: str) -> str:
+            text = (raw or "").strip()
+            if not text:
+                return ""
+            if text.startswith("{") or "'error'" in text or '"error"' in text:
+                try:
+                    import ast
+                    import json
+                    parsed = None
+                    try:
+                        parsed = json.loads(text.replace("'", '"'))
+                    except Exception:
+                        parsed = ast.literal_eval(text)
+                    return format_meta_template_error(parsed)
+                except Exception:
+                    if "132000" in text or "localizable_params" in text:
+                        return (
+                            "Missing template variables — body needs all {{1}}, {{2}}, … values. "
+                            "Send again with the correct number of body_params."
+                        )
+            return text
 
         rows: list[dict] = []
 
@@ -222,7 +250,7 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
                 "phone": contact.phone if contact else "",
                 "customer_name": (contact.full_name if contact else "") or "",
                 "status": msg.status,
-                "error_reason": msg.error_reason or "",
+                "error_reason": humanize_error(msg.error_reason or ""),
                 "sent_at": msg.sent_at.isoformat() if msg.sent_at else None,
                 "delivered_at": msg.delivered_at.isoformat() if msg.delivered_at else None,
                 "read_at": msg.read_at.isoformat() if msg.read_at else None,
@@ -246,7 +274,7 @@ class WhatsAppTemplateViewSet(viewsets.ModelViewSet):
                 "phone": recipient.contact.phone if recipient.contact_id else "",
                 "customer_name": (recipient.contact.full_name if recipient.contact_id else "") or "",
                 "status": recipient.status,
-                "error_reason": recipient.error_message or "",
+                "error_reason": humanize_error(recipient.error_message or ""),
                 "sent_at": recipient.sent_at.isoformat() if recipient.sent_at else None,
                 "delivered_at": recipient.delivered_at.isoformat() if recipient.delivered_at else None,
                 "read_at": recipient.read_at.isoformat() if recipient.read_at else None,

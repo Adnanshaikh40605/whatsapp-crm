@@ -1,6 +1,7 @@
 import logging
 import mimetypes
 import os
+import re
 
 import requests
 from django.conf import settings
@@ -42,6 +43,76 @@ def format_meta_template_error(error) -> str:
             return str(nested)
         return str(error.get("message") or error)
     return str(error)
+
+
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\d+)\s*\}\}")
+
+
+def body_placeholder_count(text: str | None) -> int:
+    """Highest {{n}} index in body — Meta expects that many body parameters."""
+    if not text:
+        return 0
+    nums = [int(m) for m in _PLACEHOLDER_RE.findall(str(text))]
+    return max(nums) if nums else 0
+
+
+def extract_example_body_params(template: WhatsAppTemplate) -> list[str]:
+    """Sample body values from examples, Meta BODY example, or variables field."""
+    examples = template.examples if isinstance(template.examples, dict) else {}
+    body_text = examples.get("body_text")
+    if isinstance(body_text, list) and body_text:
+        if isinstance(body_text[0], list):
+            return [str(v) for v in body_text[0]]
+        return [str(v) for v in body_text if not isinstance(v, (list, dict))]
+
+    for component in template.components or []:
+        if not isinstance(component, dict):
+            continue
+        if str(component.get("type") or "").upper() != "BODY":
+            continue
+        example = component.get("example") or {}
+        if isinstance(example, dict):
+            nested = example.get("body_text")
+            if isinstance(nested, list) and nested:
+                if isinstance(nested[0], list):
+                    return [str(v) for v in nested[0]]
+                return [str(v) for v in nested if not isinstance(v, (list, dict))]
+    if template.variables:
+        return [str(v) for v in template.variables]
+    return []
+
+
+def resolve_template_body_params(
+    template: WhatsAppTemplate,
+    body_params: list | None = None,
+    *,
+    fill_missing: bool = True,
+) -> list[str]:
+    """Body params matching template {{n}} count (avoids Meta #132000)."""
+    expected = body_placeholder_count(template.body)
+    provided: list[str] = []
+    if isinstance(body_params, list):
+        provided = [str(v) for v in body_params]
+    elif body_params is None:
+        provided = extract_example_body_params(template)
+
+    if expected <= 0:
+        return provided
+
+    if len(provided) >= expected:
+        return provided[:expected]
+
+    if not fill_missing:
+        return provided
+
+    defaults = extract_example_body_params(template)
+    filled = list(provided)
+    for index in range(len(filled), expected):
+        if index < len(defaults) and str(defaults[index]).strip():
+            filled.append(str(defaults[index]))
+        else:
+            filled.append(f"Sample {index + 1}")
+    return filled
 
 
 class MetaTemplateService:
@@ -443,6 +514,28 @@ class MetaTemplateService:
         if isinstance(raw_reason, str) and raw_reason.strip().upper() in {"", "NONE", "NULL", "N/A"}:
             raw_reason = ""
 
+        # Keep sample variables in sync so Test Send has the right param count.
+        sample_vars: list[str] = []
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            if str(component.get("type") or "").upper() != "BODY":
+                continue
+            example = component.get("example") or {}
+            if isinstance(example, dict):
+                nested = example.get("body_text")
+                if isinstance(nested, list) and nested:
+                    if isinstance(nested[0], list):
+                        sample_vars = [str(v) for v in nested[0]]
+                    else:
+                        sample_vars = [str(v) for v in nested if not isinstance(v, (list, dict))]
+            break
+        expected = body_placeholder_count(body)
+        if expected and len(sample_vars) < expected:
+            sample_vars = sample_vars + [f"Sample {i}" for i in range(len(sample_vars) + 1, expected + 1)]
+        elif expected and not sample_vars:
+            sample_vars = [f"Sample {i}" for i in range(1, expected + 1)]
+
         return {
             "category": (item.get("category") or WhatsAppTemplate.Category.UTILITY).lower(),
             "status": local_status,
@@ -455,6 +548,8 @@ class MetaTemplateService:
             "body": body,
             "footer": footer,
             "buttons": buttons,
+            "variables": sample_vars,
+            "examples": {"body_text": [sample_vars]} if sample_vars else {},
             "last_synced_at": timezone.now(),
         }
 
@@ -464,11 +559,16 @@ def build_template_send_components(
     body_params: list[str] | None = None,
     wa: "WhatsAppService | None" = None,
     url_button_params: dict[int, str] | None = None,
+    *,
+    fill_missing_body_params: bool = False,
 ) -> list[dict]:
     """Build WhatsApp send API components for a template message.
 
     url_button_params: { button_index: suffix } for dynamic URL buttons
     (Meta appends the suffix to the template's base URL).
+
+    fill_missing_body_params: when True (test sends), pad missing {{n}} values
+    with samples so Meta #132000 is avoided. Keep False for production CRM/campaigns.
     """
     from apps.core.whatsapp_service import WhatsAppService
 
@@ -506,7 +606,11 @@ def build_template_send_components(
                 "parameters": [{"type": "image", "image": media_ref}],
             })
 
-    params = body_params if body_params is not None else (template.variables or [])
+    params = resolve_template_body_params(
+        template,
+        body_params,
+        fill_missing=fill_missing_body_params,
+    )
     if params:
         components.append({
             "type": "body",
