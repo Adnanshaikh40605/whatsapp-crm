@@ -230,6 +230,11 @@ META_REDIRECT_URI = env("META_REDIRECT_URI", default="http://localhost:5173/onbo
 WHATSAPP_WEBHOOK_URL = env("WHATSAPP_WEBHOOK_URL", default="http://localhost:8000/api/v1/onboarding/webhooks/whatsapp/")
 WHATSAPP_VERIFY_TOKEN = env("WHATSAPP_VERIFY_TOKEN", default="whatsflow_verify")
 
+# Optional existing DriverOnHire website booking API. When empty, WhatsApp
+# stores a CRM booking request and does not invent a website booking.
+DRIVERONHIRE_BOOKING_API_URL = env("DRIVERONHIRE_BOOKING_API_URL", default="")
+DRIVERONHIRE_BOOKING_API_TOKEN = env("DRIVERONHIRE_BOOKING_API_TOKEN", default="")
+
 # SMS provider. Without credentials, sends are recorded as simulated responses.
 SMS_PROVIDER = env("SMS_PROVIDER", default="twilio")
 SMS_FROM_NUMBER = env("SMS_FROM_NUMBER", default="")

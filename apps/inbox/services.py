@@ -214,6 +214,16 @@ class WebhookProcessor:
                 "phone": phone, "conversation_id": str(conversation.id),
             })
 
+        from apps.automation.driveronhire_booking_bot import handle_booking_message, is_driveronhire_org
+
+        if is_driveronhire_org(org):
+            replies = handle_booking_message(
+                org, conversation, contact, content, button_id, raw=msg,
+            )
+            if replies:
+                self._send_replies(org, phone, conversation, replies)
+                return
+
         self._maybe_send_promo_image_reply(org, phone, conversation, content)
 
     def _maybe_send_promo_image_reply(self, org, phone, conversation, content):
